@@ -1341,17 +1341,18 @@ Function Set-WindowArtwork {
             $ShadowMargin = 14
             $FrameThickness = 1
             $ContentMargin = 12
-            $ChromeWidth = ($ShadowMargin + $FrameThickness + $ContentMargin) * 2
             $BannerScale = 3.0
-            $BannerWidth = [Math]::Round([Double]$HeaderImage.PixelWidth / $BannerScale)
+            $ContentWidth = [Math]::Round([Double]$HeaderImage.PixelWidth / $BannerScale)
+            $BannerWidth = $ContentWidth + ($ContentMargin * 2)
             $BannerHeight = [Math]::Round($BannerWidth * [Double]$HeaderImage.PixelHeight / [Double]$HeaderImage.PixelWidth)
             $HeaderBanner.Stretch = [System.Windows.Media.Stretch]::Uniform
-            $HeaderBanner.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Center
-            $HeaderBanner.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
+            $HeaderBanner.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Stretch
+            $HeaderBanner.VerticalAlignment = [System.Windows.VerticalAlignment]::Top
+            $HeaderBanner.Margin = New-Object System.Windows.Thickness 0
             $HeaderBanner.Width = $BannerWidth
             $HeaderBanner.Height = $BannerHeight
             [System.Windows.Media.RenderOptions]::SetBitmapScalingMode($HeaderBanner, [System.Windows.Media.BitmapScalingMode]::Fant)
-            $Script:Window.Width = $BannerWidth + $ChromeWidth
+            $Script:Window.Width = $BannerWidth + (($ShadowMargin + $FrameThickness) * 2)
             $HeaderBanner.Source = $HeaderImage
         }
     }
@@ -1535,6 +1536,7 @@ $WindowXaml = @'
             <Grid.RowDefinitions>
                 <RowDefinition Height="44" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
             <Grid x:Name="TitleBar" Background="White">
@@ -1577,14 +1579,15 @@ $WindowXaml = @'
                         IsHitTestVisible="False" />
             </Grid>
 
-            <StackPanel Grid.Row="1" Margin="12,8,12,18">
-                    <Image x:Name="HeaderBanner"
-                           Stretch="Uniform"
-                           HorizontalAlignment="Center"
-                           VerticalAlignment="Center"
-                           SnapsToDevicePixels="True" />
+            <Image x:Name="HeaderBanner"
+                   Grid.Row="1"
+                   Stretch="Uniform"
+                   HorizontalAlignment="Stretch"
+                   VerticalAlignment="Top"
+                   SnapsToDevicePixels="True" />
 
-                    <Grid Margin="10,16,10,0">
+            <StackPanel Grid.Row="2" Margin="12,16,12,18">
+                    <Grid Margin="10,0,10,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
