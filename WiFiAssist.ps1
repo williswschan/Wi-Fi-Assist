@@ -1338,16 +1338,20 @@ Function Set-WindowArtwork {
         $HeaderImage.EndInit()
         $HeaderImage.Freeze()
         If ($Null -Ne $HeaderBanner) {
-            $BannerScale = 3.0
-            $BannerWidth = $HeaderImage.PixelWidth / $BannerScale
-            $BannerHeight = $HeaderImage.PixelHeight / $BannerScale
-            $HeaderBanner.Stretch = [System.Windows.Media.Stretch]::Fill
-            $HeaderBanner.Width = $BannerWidth
-            $HeaderBanner.Height = $BannerHeight
             $ShadowMargin = 14
             $FrameThickness = 1
             $ContentMargin = 12
-            $Script:Window.Width = $BannerWidth + (($ShadowMargin + $FrameThickness + $ContentMargin) * 2)
+            $ChromeWidth = ($ShadowMargin + $FrameThickness + $ContentMargin) * 2
+            $BannerScale = 3.0
+            $BannerWidth = [Math]::Round([Double]$HeaderImage.PixelWidth / $BannerScale)
+            $BannerHeight = [Math]::Round($BannerWidth * [Double]$HeaderImage.PixelHeight / [Double]$HeaderImage.PixelWidth)
+            $HeaderBanner.Stretch = [System.Windows.Media.Stretch]::Uniform
+            $HeaderBanner.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Center
+            $HeaderBanner.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
+            $HeaderBanner.Width = $BannerWidth
+            $HeaderBanner.Height = $BannerHeight
+            [System.Windows.Media.RenderOptions]::SetBitmapScalingMode($HeaderBanner, [System.Windows.Media.BitmapScalingMode]::Fant)
+            $Script:Window.Width = $BannerWidth + $ChromeWidth
             $HeaderBanner.Source = $HeaderImage
         }
     }
@@ -1575,18 +1579,16 @@ $WindowXaml = @'
 
             <StackPanel Grid.Row="1" Margin="12,8,12,18">
                     <Image x:Name="HeaderBanner"
-                           Width="492"
-                           Height="86"
-                           Stretch="Fill"
+                           Stretch="Uniform"
                            HorizontalAlignment="Center"
-                           RenderOptions.BitmapScalingMode="Fant"
+                           VerticalAlignment="Center"
                            SnapsToDevicePixels="True" />
 
                     <Grid Margin="10,16,10,0">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                             <Border x:Name="Step1Badge" Width="28" Height="28" CornerRadius="14" Background="#CA2420">
@@ -1597,7 +1599,19 @@ $WindowXaml = @'
                                 <TextBlock x:Name="Step1Detail" Text="Join a Wi-Fi network" Margin="0,1,0,0" FontSize="11" Foreground="#8B95A1" />
                             </StackPanel>
                         </StackPanel>
-                        <TextBlock Grid.Column="1" Text="&#xE76C;" Margin="6,0" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="#C5CDD6" VerticalAlignment="Center" />
+                        <Path Grid.Column="1"
+                              Margin="8,0"
+                              Width="12"
+                              Height="18"
+                              HorizontalAlignment="Center"
+                              VerticalAlignment="Center"
+                              Stretch="Fill"
+                              Stroke="#9AA3AF"
+                              StrokeThickness="2.4"
+                              StrokeStartLineCap="Round"
+                              StrokeEndLineCap="Round"
+                              StrokeLineJoin="Round"
+                              Data="M 1,1 L 8,9 L 1,17" />
                         <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                             <Border x:Name="Step2Badge" Width="28" Height="28" CornerRadius="14" Background="#E1E5EA">
                                 <TextBlock x:Name="Step2Mark" Text="2" Foreground="#9AA3AF" FontWeight="Bold" FontSize="13" HorizontalAlignment="Center" VerticalAlignment="Center" />
