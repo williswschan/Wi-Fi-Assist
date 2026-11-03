@@ -1588,8 +1588,33 @@ Function Update-SignInButtonState {
 
     $SignInBusy = $Script:IsOpening -Eq $True
     $SignInReady = ($WifiConnected -Eq $True) -And ($Script:SignInUnlocked -Eq $True)
+    $WaitingForSignIn = ($WifiConnected -Eq $True) -And ($Script:SignInUnlocked -Eq $False)
     $Script:OpenSignInButton.IsEnabled = ($SignInReady -Eq $True) -And ($SignInBusy -Eq $False)
     Update-Step3Badge -Ready $SignInReady
+    Set-SignInPrompt -Waiting $WaitingForSignIn
+}
+
+Function Set-SignInPrompt {
+    Param(
+        [Bool]$Waiting
+    )
+
+    If ($Null -Eq $Script:SignInButtonLabel) {
+        Return
+    }
+
+    If ($Waiting -Eq $True) {
+        $Script:SignInButtonLabel.Text = "Please wait"
+        $Script:SignInCaption.Text = "Wi-Fi sign-in is being prepared. The authentication page will be available shortly."
+        [System.Windows.Automation.AutomationProperties]::SetName($Script:OpenSignInButton, "Please wait")
+        $Script:HelpTitle.Text = "Please wait"
+        $Script:HelpBody.Text = "The sign-in button will be available shortly."
+        Return
+    }
+
+    $Script:SignInButtonLabel.Text = "Open Wi-Fi Sign-In"
+    $Script:SignInCaption.Text = "Opens the Wi-Fi sign-in page in Microsoft Edge."
+    [System.Windows.Automation.AutomationProperties]::SetName($Script:OpenSignInButton, "Open Wi-Fi Sign-In")
 }
 
 Function Update-Step3Badge {
@@ -2250,15 +2275,18 @@ $WindowXaml = @'
                                 AutomationProperties.Name="Open Wi-Fi Sign-In">
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                                 <TextBlock Text="&#xE8A7;" FontFamily="Segoe MDL2 Assets" FontSize="14" Margin="0,1,8,0" VerticalAlignment="Center" />
-                                <TextBlock Text="Open Wi-Fi Sign-In" VerticalAlignment="Center" />
+                                <TextBlock x:Name="SignInButtonLabel" Text="Open Wi-Fi Sign-In" VerticalAlignment="Center" />
                             </StackPanel>
                         </Button>
                     </Grid>
 
-                    <TextBlock Margin="0,8,0,0"
+                    <TextBlock x:Name="SignInCaption"
+                               Margin="0,8,0,0"
                                FontSize="12"
                                Foreground="#8B95A1"
                                HorizontalAlignment="Center"
+                               TextAlignment="Center"
+                               TextWrapping="Wrap"
                                Text="Opens the Wi-Fi sign-in page in Microsoft Edge." />
 
                     <TextBlock x:Name="ResultText"
@@ -2304,6 +2332,8 @@ For ($BarIndex = 0; $BarIndex -Lt 10; $BarIndex++) {
     $Script:SignalBars[$BarIndex] = $Script:Window.FindName("SignalBar" + [String]($BarIndex + 1))
 }
 $Script:OpenSignInButton = $Script:Window.FindName("OpenSignInButton")
+$Script:SignInButtonLabel = $Script:Window.FindName("SignInButtonLabel")
+$Script:SignInCaption = $Script:Window.FindName("SignInCaption")
 $Script:ResultText = $Script:Window.FindName("ResultText")
 $Script:Step1Badge = $Script:Window.FindName("Step1Badge")
 $Script:Step1Mark = $Script:Window.FindName("Step1Mark")
@@ -2328,7 +2358,7 @@ ForEach ($SignalBar in $Script:SignalBars) {
         $SignalBarsMissing = $True
     }
 }
-If (($Null -Eq $Script:StatusCard) -Or ($Null -Eq $Script:StatusText) -Or ($Null -Eq $Script:NetworkText) -Or ($Null -Eq $Script:SignalRow) -Or ($Null -Eq $Script:SignalText) -Or ($SignalBarsMissing -Eq $True) -Or ($Null -Eq $Script:OpenSignInButton) -Or ($Null -Eq $Script:ResultText) -Or ($Null -Eq $Script:Step1Badge) -Or ($Null -Eq $Script:Step1Mark) -Or ($Null -Eq $Script:Step1Title) -Or ($Null -Eq $Script:Step1Detail) -Or ($Null -Eq $Script:Step2Badge) -Or ($Null -Eq $Script:Step2Mark) -Or ($Null -Eq $Script:Step3Badge) -Or ($Null -Eq $Script:Step3Mark) -Or ($Null -Eq $Script:ChangeNetworkButton) -Or ($Null -Eq $Script:ChangeNetworkLabel) -Or ($Null -Eq $Script:HelpTitle) -Or ($Null -Eq $Script:HelpBody) -Or ($Null -Eq $Script:MinimizeButton) -Or ($Null -Eq $Script:CloseButton) -Or ($Null -Eq $Script:WindowSurface) -Or ($Null -Eq $Script:TitleBar)) {
+If (($Null -Eq $Script:StatusCard) -Or ($Null -Eq $Script:StatusText) -Or ($Null -Eq $Script:NetworkText) -Or ($Null -Eq $Script:SignalRow) -Or ($Null -Eq $Script:SignalText) -Or ($SignalBarsMissing -Eq $True) -Or ($Null -Eq $Script:OpenSignInButton) -Or ($Null -Eq $Script:SignInButtonLabel) -Or ($Null -Eq $Script:SignInCaption) -Or ($Null -Eq $Script:ResultText) -Or ($Null -Eq $Script:Step1Badge) -Or ($Null -Eq $Script:Step1Mark) -Or ($Null -Eq $Script:Step1Title) -Or ($Null -Eq $Script:Step1Detail) -Or ($Null -Eq $Script:Step2Badge) -Or ($Null -Eq $Script:Step2Mark) -Or ($Null -Eq $Script:Step3Badge) -Or ($Null -Eq $Script:Step3Mark) -Or ($Null -Eq $Script:ChangeNetworkButton) -Or ($Null -Eq $Script:ChangeNetworkLabel) -Or ($Null -Eq $Script:HelpTitle) -Or ($Null -Eq $Script:HelpBody) -Or ($Null -Eq $Script:MinimizeButton) -Or ($Null -Eq $Script:CloseButton) -Or ($Null -Eq $Script:WindowSurface) -Or ($Null -Eq $Script:TitleBar)) {
     Write-SignInLog "[ERROR] The sign-in window could not be loaded."
     Write-Error "[ERROR] The sign-in window could not be loaded."
     Exit 1
