@@ -2247,7 +2247,7 @@ $WindowXaml = @'
                                 <TextBlock x:Name="Step1Mark" Text="1" Foreground="White" FontWeight="Bold" FontSize="13" HorizontalAlignment="Center" VerticalAlignment="Center" />
                             </Border>
                             <StackPanel Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center">
-                                <TextBlock x:Name="Step1Title" Text="Secure Client" FontSize="13" FontWeight="SemiBold" Foreground="#1A2332" />
+                                <TextBlock x:Name="Step1Title" Text="Cisco Secure Client" FontSize="13" FontWeight="SemiBold" Foreground="#1A2332" TextWrapping="Wrap" />
                                 <TextBlock x:Name="Step1Detail" Text="Agent is not running." Margin="0,1,0,0" FontSize="11" Foreground="#8B95A1" TextWrapping="Wrap" AutomationProperties.AutomationId="Step1Detail" />
                             </StackPanel>
                             <Button x:Name="StartClientButton"
