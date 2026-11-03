@@ -1214,6 +1214,9 @@ $Script:SignInDelayTimer = $Null
 $Script:SsidWarningShown = $False
 $Script:AgentWasRunning = $Null
 $Script:LastLoggedSignal = ""
+$Script:SignInWaitFlashing = $False
+$Script:SecureClientPath = "C:\Program Files (x86)\Cisco\Cisco Secure Client\UI\csc_ui.exe"
+$Script:SecureClientStartFailed = $False
 
 Function New-FrozenBrush {
     Param(
@@ -1354,10 +1357,21 @@ Function Update-AgentStep {
     If ($AgentRunning -Eq $True) {
         Set-StepBadge -Badge $Script:Step1Badge -Mark $Script:Step1Mark -Title $Script:Step1Title -BadgeBrush $Script:ConnectedBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
         $Script:Step1Detail.Text = "Agent is running"
+        $Script:SecureClientStartFailed = $False
+        $Script:StartClientButton.Visibility = [System.Windows.Visibility]::Collapsed
     }
     Else {
         Set-StepBadge -Badge $Script:Step1Badge -Mark $Script:Step1Mark -Title $Script:Step1Title -BadgeBrush $Script:OfflineBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
-        $Script:Step1Detail.Text = "Agent is not running. Please run Cisco Secure Client."
+        If ((Test-Path -LiteralPath $Script:SecureClientPath) -Eq $False) {
+            $Script:Step1Detail.Text = "Cisco Secure Client was not found."
+        }
+        ElseIf ($Script:SecureClientStartFailed -Eq $True) {
+            $Script:Step1Detail.Text = "Cisco Secure Client could not be started."
+        }
+        Else {
+            $Script:Step1Detail.Text = "Agent is not running."
+        }
+        $Script:StartClientButton.Visibility = [System.Windows.Visibility]::Visible
         Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:StatusText -BadgeBrush $Script:InactiveStepBrush -MarkBrush $Script:InactiveTitleBrush -TitleBrush $Script:InactiveTitleBrush
         Set-StepBadge -Badge $Script:Step3Badge -Mark $Script:Step3Mark -Title $Null -BadgeBrush $Script:InactiveStepBrush -MarkBrush $Script:InactiveTitleBrush -TitleBrush $Script:InactiveTitleBrush
         $Script:StatusCard.Background = $Script:InactiveCardBrush
@@ -1372,6 +1386,32 @@ Function Update-AgentStep {
             Write-SignInLog "[INFO] Secure Client agent is not running."
         }
         $Script:AgentWasRunning = $AgentRunning
+    }
+}
+
+Function Start-SecureClient {
+    If ((Test-CscUiRunning) -Eq $True) {
+        Return
+    }
+
+    If ((Test-Path -LiteralPath $Script:SecureClientPath) -Eq $False) {
+        $Script:SecureClientStartFailed = $False
+        Update-AgentStep
+        Write-SignInLog "[WARN] Cisco Secure Client was not found."
+        Return
+    }
+
+    Try {
+        $ClientFolder = Split-Path -Parent $Script:SecureClientPath
+        Start-Process -FilePath $Script:SecureClientPath -WorkingDirectory $ClientFolder
+        $Script:SecureClientStartFailed = $False
+        $Script:Step1Detail.Text = "Starting Cisco Secure Client..."
+        Write-SignInLog "[INFO] Started Cisco Secure Client."
+    }
+    Catch {
+        $Script:SecureClientStartFailed = $True
+        Update-AgentStep
+        Write-SignInLog ("[ERROR] Cisco Secure Client could not be started: " + [String]$Error[0])
     }
 }
 
@@ -1439,7 +1479,7 @@ Function Set-SignalIndicator {
     }
 
     $Script:SignalText.Text = ([String]$Level) + " / 10"
-    $Script:SignalRow.ToolTip = "Signal strength " + ([String]$Level) + " of 10"
+    $Script:SignalRow.ToolTip = "Signal quality " + ([String]$Level) + " of 10"
     [System.Windows.Automation.AutomationProperties]::SetName($Script:SignalRow, $Script:SignalRow.ToolTip)
     $Script:SignalRow.Visibility = [System.Windows.Visibility]::Visible
 }
@@ -1609,12 +1649,44 @@ Function Set-SignInPrompt {
         [System.Windows.Automation.AutomationProperties]::SetName($Script:OpenSignInButton, "Please wait")
         $Script:HelpTitle.Text = "Please wait"
         $Script:HelpBody.Text = "The sign-in button will be available shortly."
+        Start-SignInWaitFlash
         Return
     }
 
+    Stop-SignInWaitFlash
     $Script:SignInButtonLabel.Text = "Open Wi-Fi Sign-In"
     $Script:SignInCaption.Text = "Opens the Wi-Fi sign-in page in Microsoft Edge."
     [System.Windows.Automation.AutomationProperties]::SetName($Script:OpenSignInButton, "Open Wi-Fi Sign-In")
+}
+
+Function Start-SignInWaitFlash {
+    If ($Script:SignInWaitFlashing -Eq $True) {
+        Return
+    }
+
+    $Pulse = New-Object System.Windows.Media.Animation.DoubleAnimation
+    $Pulse.From = 1.0
+    $Pulse.To = 0.15
+    $Pulse.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromMilliseconds(700))
+    $Pulse.AutoReverse = $True
+    $Pulse.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+    $OpacityProperty = [System.Windows.UIElement]::OpacityProperty
+    $Script:SignInButtonLabel.BeginAnimation($OpacityProperty, $Pulse)
+    $Script:SignInCaption.BeginAnimation($OpacityProperty, $Pulse)
+    $Script:SignInWaitFlashing = $True
+}
+
+Function Stop-SignInWaitFlash {
+    If ($Script:SignInWaitFlashing -Eq $False) {
+        Return
+    }
+
+    $OpacityProperty = [System.Windows.UIElement]::OpacityProperty
+    $Script:SignInButtonLabel.BeginAnimation($OpacityProperty, $Null)
+    $Script:SignInCaption.BeginAnimation($OpacityProperty, $Null)
+    $Script:SignInButtonLabel.Opacity = 1
+    $Script:SignInCaption.Opacity = 1
+    $Script:SignInWaitFlashing = $False
 }
 
 Function Update-Step3Badge {
@@ -2169,14 +2241,24 @@ $WindowXaml = @'
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <Border x:Name="Step1Badge" Width="28" Height="28" CornerRadius="14" Background="#CA2420" VerticalAlignment="Center">
                                 <TextBlock x:Name="Step1Mark" Text="1" Foreground="White" FontWeight="Bold" FontSize="13" HorizontalAlignment="Center" VerticalAlignment="Center" />
                             </Border>
                             <StackPanel Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center">
                                 <TextBlock x:Name="Step1Title" Text="Secure Client" FontSize="13" FontWeight="SemiBold" Foreground="#1A2332" />
-                                <TextBlock x:Name="Step1Detail" Text="Agent is not running. Please run Cisco Secure Client." Margin="0,1,0,0" FontSize="11" Foreground="#8B95A1" TextWrapping="Wrap" />
+                                <TextBlock x:Name="Step1Detail" Text="Agent is not running." Margin="0,1,0,0" FontSize="11" Foreground="#8B95A1" TextWrapping="Wrap" AutomationProperties.AutomationId="Step1Detail" />
                             </StackPanel>
+                            <Button x:Name="StartClientButton"
+                                    Grid.Column="2"
+                                    Margin="10,0,0,0"
+                                    Style="{StaticResource SecondaryButtonStyle}"
+                                    VerticalAlignment="Center"
+                                    AutomationProperties.AutomationId="StartClientButton"
+                                    AutomationProperties.Name="Start Secure Client">
+                                <TextBlock Text="Start&#x0a;Client" TextAlignment="Center" FontSize="12" FontWeight="SemiBold" />
+                            </Button>
                         </Grid>
                         <Border Width="2" Height="10" Margin="13,4,0,4" HorizontalAlignment="Left" Background="#E6E9ED" CornerRadius="1" />
                     </StackPanel>
@@ -2198,11 +2280,15 @@ $WindowXaml = @'
                                 CornerRadius="10"
                                 Padding="14,12">
                             <Grid VerticalAlignment="Center">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
-                                <StackPanel VerticalAlignment="Center">
+                                <StackPanel Grid.Row="0" VerticalAlignment="Center">
                                     <TextBlock x:Name="StatusText"
                                                Text="Checking Wi-Fi..."
                                                FontSize="15"
@@ -2216,31 +2302,40 @@ $WindowXaml = @'
                                                Foreground="#5E6874"
                                                TextWrapping="Wrap"
                                                AutomationProperties.AutomationId="NetworkText" />
-                                    <StackPanel x:Name="SignalRow"
-                                                Orientation="Horizontal"
-                                                Margin="0,7,0,0"
-                                                Visibility="Collapsed"
-                                                AutomationProperties.AutomationId="SignalRow"
-                                                AutomationProperties.Name="Signal strength">
-                                        <StackPanel Orientation="Horizontal" Height="16" VerticalAlignment="Center">
-                                            <Border x:Name="SignalBar1" Width="4" Height="3" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
-                                            <Border x:Name="SignalBar2" Width="4" Height="4" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
-                                            <Border x:Name="SignalBar3" Width="4" Height="6" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
-                                            <Border x:Name="SignalBar4" Width="4" Height="7" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
-                                            <Border x:Name="SignalBar5" Width="4" Height="8" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
-                                            <Border x:Name="SignalBar6" Width="4" Height="10" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
-                                            <Border x:Name="SignalBar7" Width="4" Height="11" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
-                                            <Border x:Name="SignalBar8" Width="4" Height="13" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
-                                            <Border x:Name="SignalBar9" Width="4" Height="14" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
-                                            <Border x:Name="SignalBar10" Width="4" Height="16" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
-                                        </StackPanel>
-                                        <TextBlock x:Name="SignalText"
-                                                   Margin="8,0,0,0"
-                                                   FontSize="12"
-                                                   Foreground="#5E6874"
-                                                   VerticalAlignment="Center"
-                                                   AutomationProperties.AutomationId="SignalText" />
+                                </StackPanel>
+                                <StackPanel x:Name="SignalRow"
+                                            Grid.Row="1"
+                                            Grid.ColumnSpan="2"
+                                            Orientation="Horizontal"
+                                            Margin="0,10,0,0"
+                                            HorizontalAlignment="Center"
+                                            Visibility="Collapsed"
+                                            AutomationProperties.AutomationId="SignalRow"
+                                            AutomationProperties.Name="Signal quality">
+                                    <TextBlock Text="Quality"
+                                               Margin="0,0,8,0"
+                                               FontSize="12"
+                                               FontWeight="SemiBold"
+                                               Foreground="#5E6874"
+                                               VerticalAlignment="Center" />
+                                    <StackPanel Orientation="Horizontal" Height="16" VerticalAlignment="Center">
+                                        <Border x:Name="SignalBar1" Width="4" Height="3" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
+                                        <Border x:Name="SignalBar2" Width="4" Height="4" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
+                                        <Border x:Name="SignalBar3" Width="4" Height="6" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
+                                        <Border x:Name="SignalBar4" Width="4" Height="7" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
+                                        <Border x:Name="SignalBar5" Width="4" Height="8" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
+                                        <Border x:Name="SignalBar6" Width="4" Height="10" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
+                                        <Border x:Name="SignalBar7" Width="4" Height="11" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
+                                        <Border x:Name="SignalBar8" Width="4" Height="13" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
+                                        <Border x:Name="SignalBar9" Width="4" Height="14" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
+                                        <Border x:Name="SignalBar10" Width="4" Height="16" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
                                     </StackPanel>
+                                    <TextBlock x:Name="SignalText"
+                                               Margin="8,0,0,0"
+                                               FontSize="12"
+                                               Foreground="#5E6874"
+                                               VerticalAlignment="Center"
+                                               AutomationProperties.AutomationId="SignalText" />
                                 </StackPanel>
                                 <Button x:Name="ChangeNetworkButton"
                                         Grid.Column="1"
@@ -2339,6 +2434,7 @@ $Script:Step1Badge = $Script:Window.FindName("Step1Badge")
 $Script:Step1Mark = $Script:Window.FindName("Step1Mark")
 $Script:Step1Title = $Script:Window.FindName("Step1Title")
 $Script:Step1Detail = $Script:Window.FindName("Step1Detail")
+$Script:StartClientButton = $Script:Window.FindName("StartClientButton")
 $Script:Step2Badge = $Script:Window.FindName("Step2Badge")
 $Script:Step2Mark = $Script:Window.FindName("Step2Mark")
 $Script:Step3Badge = $Script:Window.FindName("Step3Badge")
@@ -2358,7 +2454,7 @@ ForEach ($SignalBar in $Script:SignalBars) {
         $SignalBarsMissing = $True
     }
 }
-If (($Null -Eq $Script:StatusCard) -Or ($Null -Eq $Script:StatusText) -Or ($Null -Eq $Script:NetworkText) -Or ($Null -Eq $Script:SignalRow) -Or ($Null -Eq $Script:SignalText) -Or ($SignalBarsMissing -Eq $True) -Or ($Null -Eq $Script:OpenSignInButton) -Or ($Null -Eq $Script:SignInButtonLabel) -Or ($Null -Eq $Script:SignInCaption) -Or ($Null -Eq $Script:ResultText) -Or ($Null -Eq $Script:Step1Badge) -Or ($Null -Eq $Script:Step1Mark) -Or ($Null -Eq $Script:Step1Title) -Or ($Null -Eq $Script:Step1Detail) -Or ($Null -Eq $Script:Step2Badge) -Or ($Null -Eq $Script:Step2Mark) -Or ($Null -Eq $Script:Step3Badge) -Or ($Null -Eq $Script:Step3Mark) -Or ($Null -Eq $Script:ChangeNetworkButton) -Or ($Null -Eq $Script:ChangeNetworkLabel) -Or ($Null -Eq $Script:HelpTitle) -Or ($Null -Eq $Script:HelpBody) -Or ($Null -Eq $Script:MinimizeButton) -Or ($Null -Eq $Script:CloseButton) -Or ($Null -Eq $Script:WindowSurface) -Or ($Null -Eq $Script:TitleBar)) {
+If (($Null -Eq $Script:StatusCard) -Or ($Null -Eq $Script:StatusText) -Or ($Null -Eq $Script:NetworkText) -Or ($Null -Eq $Script:SignalRow) -Or ($Null -Eq $Script:SignalText) -Or ($SignalBarsMissing -Eq $True) -Or ($Null -Eq $Script:OpenSignInButton) -Or ($Null -Eq $Script:SignInButtonLabel) -Or ($Null -Eq $Script:SignInCaption) -Or ($Null -Eq $Script:ResultText) -Or ($Null -Eq $Script:Step1Badge) -Or ($Null -Eq $Script:Step1Mark) -Or ($Null -Eq $Script:Step1Title) -Or ($Null -Eq $Script:Step1Detail) -Or ($Null -Eq $Script:StartClientButton) -Or ($Null -Eq $Script:Step2Badge) -Or ($Null -Eq $Script:Step2Mark) -Or ($Null -Eq $Script:Step3Badge) -Or ($Null -Eq $Script:Step3Mark) -Or ($Null -Eq $Script:ChangeNetworkButton) -Or ($Null -Eq $Script:ChangeNetworkLabel) -Or ($Null -Eq $Script:HelpTitle) -Or ($Null -Eq $Script:HelpBody) -Or ($Null -Eq $Script:MinimizeButton) -Or ($Null -Eq $Script:CloseButton) -Or ($Null -Eq $Script:WindowSurface) -Or ($Null -Eq $Script:TitleBar)) {
     Write-SignInLog "[ERROR] The sign-in window could not be loaded."
     Write-Error "[ERROR] The sign-in window could not be loaded."
     Exit 1
@@ -2367,6 +2463,7 @@ If (($Null -Eq $Script:StatusCard) -Or ($Null -Eq $Script:StatusText) -Or ($Null
 Set-WindowArtwork
 $Script:OpenSignInButton.Add_Click({ Invoke-SignInPage })
 $Script:ChangeNetworkButton.Add_Click({ Open-WifiNetworks })
+$Script:StartClientButton.Add_Click({ Start-SecureClient })
 $Script:MinimizeButton.Add_Click({
     $Script:Window.WindowState = [System.Windows.WindowState]::Minimized
 })
