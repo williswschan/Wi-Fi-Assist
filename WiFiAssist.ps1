@@ -1310,7 +1310,7 @@ Function Set-WifiStatusAppearance {
             $Script:StatusText.Foreground = $Script:SuccessTextBrush
             Set-NetworkButtonLabel -Label "Change`nNetwork"
             Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:StatusText -BadgeBrush $Script:ConnectedBrush -MarkBrush $WhiteBrush -TitleBrush $Script:SuccessTextBrush
-            Set-StepBadge -Badge $Script:Step3Badge -Mark $Script:Step3Mark -Title $Null -BadgeBrush $Script:OfflineBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
+            Set-StepBadge -Badge $Script:Step3Badge -Mark $Script:Step3Mark -Title $Null -BadgeBrush $Script:InactiveStepBrush -MarkBrush $Script:InactiveTitleBrush -TitleBrush $Script:InactiveTitleBrush
             $Script:HelpTitle.Text = "Tip"
             $Script:HelpBody.Text = "If the sign-in page does not appear, click the ""Open Wi-Fi Sign-In"" button."
         }
@@ -1587,7 +1587,27 @@ Function Update-SignInButtonState {
     }
 
     $SignInBusy = $Script:IsOpening -Eq $True
-    $Script:OpenSignInButton.IsEnabled = ($WifiConnected -Eq $True) -And ($Script:SignInUnlocked -Eq $True) -And ($SignInBusy -Eq $False)
+    $SignInReady = ($WifiConnected -Eq $True) -And ($Script:SignInUnlocked -Eq $True)
+    $Script:OpenSignInButton.IsEnabled = ($SignInReady -Eq $True) -And ($SignInBusy -Eq $False)
+    Update-Step3Badge -Ready $SignInReady
+}
+
+Function Update-Step3Badge {
+    Param(
+        [Bool]$Ready
+    )
+
+    If ($Null -Eq $Script:Step3Badge) {
+        Return
+    }
+
+    $WhiteBrush = [System.Windows.Media.Brushes]::White
+    If ($Ready -Eq $True) {
+        Set-StepBadge -Badge $Script:Step3Badge -Mark $Script:Step3Mark -Title $Null -BadgeBrush $Script:ConnectedBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
+    }
+    Else {
+        Set-StepBadge -Badge $Script:Step3Badge -Mark $Script:Step3Mark -Title $Null -BadgeBrush $Script:InactiveStepBrush -MarkBrush $Script:InactiveTitleBrush -TitleBrush $Script:InactiveTitleBrush
+    }
 }
 
 Function Start-SignInBrowser {
