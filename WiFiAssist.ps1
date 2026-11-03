@@ -5,8 +5,7 @@ Param(
 )
 
 $ErrorActionPreference = "Stop"
-$Script:IsClosing = $False
-$Script:ExitCode = 0
+$Script:LogLock = New-Object System.Object
 $Script:LastLoggedLinkState = ""
 $TempFolder = $Env:TEMP
 If ([String]::IsNullOrWhiteSpace($TempFolder)) {
@@ -14,141 +13,37 @@ If ([String]::IsNullOrWhiteSpace($TempFolder)) {
 }
 $Script:LogPath = Join-Path $TempFolder "WiFiAssist.log"
 
-# This logger can also run on CLR worker threads, where a PowerShell script
-# block has no runspace. All writers use the same bounded, per-log mutex.
-$DiagnosticsSource = @'
-using System;
-using System.IO;
-using System.Security.Cryptography;
-using System.Text;
-using System.Threading;
-
-public static class SignInDiagnostics
-{
-    public const long MaxBytes = 1024 * 1024;
-    public const int Archives = 3;
-    private static readonly object Gate = new object();
-    private static readonly Encoding Utf8 = new UTF8Encoding(false);
-    private static string LogPath;
-    private static string MutexName;
-    private static bool Listening;
-
-    public static void Configure(string path)
-    {
-        lock (Gate)
-        {
-            LogPath = Path.GetFullPath(path);
-            using (SHA256 hash = SHA256.Create())
-                MutexName = "Local\\WiFiAssist.Log." + BitConverter.ToString(
-                    hash.ComputeHash(Utf8.GetBytes(LogPath.ToUpperInvariant()))).Replace("-", "");
-        }
-    }
-
-    public static void Start()
-    {
-        lock (Gate)
-        {
-            if (Listening) return;
-            AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
-            Listening = true;
-        }
-    }
-
-    public static void Stop()
-    {
-        lock (Gate)
-        {
-            if (!Listening) return;
-            AppDomain.CurrentDomain.UnhandledException -= OnUnhandledException;
-            Listening = false;
-        }
-    }
-
-    private static void OnUnhandledException(object sender, UnhandledExceptionEventArgs args)
-    {
-        WriteException("Process unhandled exception; terminating=" + args.IsTerminating,
-            args.ExceptionObject as Exception);
-    }
-
-    public static void WriteException(string operation, Exception error)
-    {
-        // Exception messages can contain paths, SSIDs or URLs. Record stable
-        // error types/codes instead; never serialize authentication data.
-        string detail = error == null ? "Unknown exception" :
-            error.GetType().FullName + "; HResult=0x" + error.HResult.ToString("X8");
-        if (error != null && error.InnerException != null)
-            detail += "; inner=" + error.InnerException.GetType().FullName +
-                "; innerHResult=0x" + error.InnerException.HResult.ToString("X8");
-        Write("[ERROR] " + operation + ": " + detail);
-    }
-
-    public static void Write(string message)
-    {
-        try
-        {
-            lock (Gate)
-            {
-                if (LogPath == null || MutexName == null) return;
-                string safe = (message ?? "").Replace('\r', ' ').Replace('\n', ' ');
-                if (safe.Length > 2048) safe = safe.Substring(0, 2048);
-                byte[] line = Utf8.GetBytes("[" + DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss.fff zzz") +
-                    "] " + safe + Environment.NewLine);
-                using (Mutex mutex = new Mutex(false, MutexName))
-                {
-                    bool acquired = false;
-                    try
-                    {
-                        try { acquired = mutex.WaitOne(100); }
-                        catch (AbandonedMutexException) { acquired = true; }
-                        if (!acquired) return;
-                        if (File.Exists(LogPath) && new FileInfo(LogPath).Length + line.Length > MaxBytes)
-                        {
-                            // Refuse rotation while another writer holds the active
-                            // file. Keep this guard open through the rename.
-                            using (FileStream guard = new FileStream(LogPath, FileMode.Open,
-                                FileAccess.Read, FileShare.Read | FileShare.Delete))
-                            {
-                                string oldest = LogPath + "." + Archives;
-                                if (File.Exists(oldest)) File.Delete(oldest);
-                                for (int index = Archives - 1; index >= 1; index--)
-                                {
-                                    string source = LogPath + "." + index;
-                                    if (File.Exists(source)) File.Move(source, LogPath + "." + (index + 1));
-                                }
-                                File.Move(LogPath, LogPath + ".1");
-                            }
-                        }
-                        using (FileStream stream = new FileStream(LogPath, FileMode.Append,
-                            FileAccess.Write, FileShare.Read)) stream.Write(line, 0, line.Length);
-                    }
-                    finally { if (acquired) mutex.ReleaseMutex(); }
-                }
-            }
-        }
-        catch (Exception) { /* Diagnostics must not break the application. */ }
-    }
-}
-'@
-
-If ($Null -Eq ([System.Management.Automation.PSTypeName]"SignInDiagnostics").Type) {
-    Add-Type -TypeDefinition $DiagnosticsSource -Language CSharp
-}
-Try { [SignInDiagnostics]::Configure($Script:LogPath) }
-Catch { Write-Warning "Wi-Fi Assist could not initialise its diagnostic log." }
-[SignInDiagnostics]::Start()
-
 Function Write-SignInLog {
     Param(
         [String]$Message
     )
 
-    [SignInDiagnostics]::Write($Message)
+    If ([String]::IsNullOrWhiteSpace($Script:LogPath)) {
+        Return
+    }
+
+    $Stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
+    $Line = "[" + $Stamp + "] " + $Message + [System.Environment]::NewLine
+    [System.Threading.Monitor]::Enter($Script:LogLock)
+    Try {
+        $Utf8 = New-Object System.Text.UTF8Encoding $False
+        [System.IO.File]::AppendAllText($Script:LogPath, $Line, $Utf8)
+    }
+    Catch {
+    }
+    Finally {
+        [System.Threading.Monitor]::Exit($Script:LogLock)
+    }
 }
 
-Function Write-SignInError {
-    Param([String]$Operation, [System.Exception]$Exception)
-    [SignInDiagnostics]::WriteException($Operation, $Exception)
-}
+[System.AppDomain]::CurrentDomain.Add_UnhandledException({
+    Param($Sender, $EventArgs)
+    $ExceptionText = ""
+    If ($Null -Ne $EventArgs.ExceptionObject) {
+        $ExceptionText = $EventArgs.ExceptionObject.ToString()
+    }
+    Write-SignInLog ("[ERROR] Process unhandled exception. Terminating=" + $EventArgs.IsTerminating + ". " + $ExceptionText)
+})
 
 If ([String]::IsNullOrWhiteSpace($PSCommandPath)) {
     Write-SignInLog "[ERROR] Run this script from a file path."
@@ -174,23 +69,15 @@ If (($IsDesktopHost -Eq $False) -Or ($IsStaThread -Eq $False)) {
         "-ExecutionPolicy",
         "Bypass",
         "-File",
-        ('"' + $PSCommandPath + '"'),
+        $PSCommandPath,
         "-StaHost"
     )
-    Try {
-        Start-Process -FilePath $WindowsPowerShell -ArgumentList $ArgumentList -WindowStyle Hidden -ErrorAction Stop | Out-Null
-    }
-    Catch {
-        Write-SignInError -Operation "Windows PowerShell relaunch failed" -Exception $_.Exception
-        Write-Error "Wi-Fi Assist could not start Windows PowerShell. See the diagnostic log."
-        Exit 1
-    }
+    Start-Process -FilePath $WindowsPowerShell -ArgumentList $ArgumentList -WindowStyle Hidden | Out-Null
     Exit 0
 }
 
 Write-SignInLog ("[INFO] Sign-in script started. PID=" + $PID + ". ErrorAction=Stop.")
 
-Try {
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
@@ -214,12 +101,10 @@ public sealed class WifiSnapshot
 
     public string State { get; private set; }
     public string Detail { get; private set; }
-    public int DiagnosticCode { get; internal set; }
 }
 
 public static class WifiMonitor
 {
-    private static int LastNativeError;
     private const int ErrorSuccess = 0;
     private const int ErrorServiceNotActive = 1062;
     private const int ErrorAccessDenied = 5;
@@ -232,16 +117,13 @@ public static class WifiMonitor
 
     public static WifiSnapshot Query()
     {
-        LastNativeError = 0;
         try
         {
-            WifiSnapshot snapshot = QueryCore();
-            snapshot.DiagnosticCode = LastNativeError;
-            return snapshot;
+            return QueryCore();
         }
-        catch (Exception error)
+        catch (Exception)
         {
-            return new WifiSnapshot("Unavailable", "Could not read Wi-Fi status.") { DiagnosticCode = error.HResult };
+            return new WifiSnapshot("Unavailable", "Could not read Wi-Fi status.");
         }
     }
 
@@ -252,7 +134,6 @@ public static class WifiMonitor
         int openResult = NativeMethods.WlanOpenHandle(ClientVersion, IntPtr.Zero, out negotiatedVersion, out handle);
         if (openResult != ErrorSuccess)
         {
-            LastNativeError = openResult;
             return new WifiSnapshot("Unavailable", DescribeApiError(openResult));
         }
 
@@ -262,7 +143,6 @@ public static class WifiMonitor
             int enumResult = NativeMethods.WlanEnumInterfaces(handle, IntPtr.Zero, out listPointer);
             if (enumResult != ErrorSuccess)
             {
-                LastNativeError = enumResult;
                 return new WifiSnapshot("Unavailable", DescribeApiError(enumResult));
             }
 
@@ -420,12 +300,10 @@ public static class WifiMonitor
                         continue;
                     }
 
-                    foreach (UnicastIPAddressInformation address in adapter.GetIPProperties().UnicastAddresses)
+                    IPInterfaceProperties properties = adapter.GetIPProperties();
+                    if (HasPreferredIpv4(properties) && HasIpv4Gateway(properties))
                     {
-                        if (IsUsableAddress(address.Address))
-                        {
-                            return true;
-                        }
+                        return true;
                     }
                 }
             }
@@ -438,35 +316,58 @@ public static class WifiMonitor
         return false;
     }
 
-    private static bool IsUsableAddress(IPAddress address)
+    private static bool HasPreferredIpv4(IPInterfaceProperties properties)
     {
-        if (address == null || IPAddress.IsLoopback(address))
+        foreach (UnicastIPAddressInformation address in properties.UnicastAddresses)
         {
-            return false;
-        }
-
-        if (address.AddressFamily == AddressFamily.InterNetwork)
-        {
-            byte[] bytes = address.GetAddressBytes();
-            if (bytes.Length != 4 || bytes[0] == 0 || bytes[0] >= 224)
+            if (!IsUsableIpv4(address.Address))
             {
-                return false;
+                continue;
             }
 
-            if (bytes[0] == 169 && bytes[1] == 254)
+            if (address.DuplicateAddressDetectionState != DuplicateAddressDetectionState.Preferred)
             {
-                return false;
+                continue;
             }
 
             return true;
         }
 
-        if (address.AddressFamily == AddressFamily.InterNetworkV6)
+        return false;
+    }
+
+    private static bool HasIpv4Gateway(IPInterfaceProperties properties)
+    {
+        foreach (GatewayIPAddressInformation gateway in properties.GatewayAddresses)
         {
-            return !address.Equals(IPAddress.IPv6Any) && !address.IsIPv6LinkLocal && !address.IsIPv6Multicast;
+            if (IsUsableIpv4(gateway.Address))
+            {
+                return true;
+            }
         }
 
         return false;
+    }
+
+    private static bool IsUsableIpv4(IPAddress address)
+    {
+        if (address == null || address.AddressFamily != AddressFamily.InterNetwork || IPAddress.IsLoopback(address))
+        {
+            return false;
+        }
+
+        byte[] bytes = address.GetAddressBytes();
+        if (bytes.Length != 4 || bytes[0] == 0)
+        {
+            return false;
+        }
+
+        if (bytes[0] == 169 && bytes[1] == 254)
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private static string QueryConnectedName(IntPtr handle, Guid interfaceGuid)
@@ -485,7 +386,6 @@ public static class WifiMonitor
 
         if (result != ErrorSuccess || data == IntPtr.Zero)
         {
-            LastNativeError = result;
             return null;
         }
 
@@ -522,7 +422,6 @@ public static class WifiMonitor
 
         if (result != ErrorSuccess || data == IntPtr.Zero)
         {
-            LastNativeError = result;
             return false;
         }
 
@@ -607,7 +506,7 @@ public static class WifiMonitor
 
     private static string ReadProfileName(IntPtr data, uint dataSize)
     {
-        if (dataSize < ProfileNameOffset + 512)
+        if (dataSize < ProfileNameOffset + 2)
         {
             return "";
         }
@@ -679,623 +578,299 @@ $CiscoBrowserSource = @'
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
-using System.Text;
 
-// Browser closing uses the user-confirmed title and a live process ancestry check.
-// Exact rules remain available only for the separate failover notice.
-public sealed class CiscoWindowRule
+public static class CiscoBrowserCloser
 {
-    public string Action { get; set; }
-    public string ExecutablePath { get; set; }
-    public string Sha256 { get; set; }
-    public string WindowClass { get; set; }
-    public string WindowTitle { get; set; }
-}
+    private static List<IntPtr> FoundHandles = new List<IntPtr>();
+    private static List<int> ProcessIds = new List<int>();
+    private static EnumWindowsProc WindowCallback = OnWindow;
 
-public sealed class CiscoWindowTarget
-{
-    public IntPtr Handle { get; set; }
-    public int ProcessId { get; set; }
-    public long ProcessStarted { get; set; }
-    public CiscoWindowRule Rule { get; set; }
-    public CiscoProcessIdentity[] BrowserOwnership { get; set; }
-}
-
-public sealed class CiscoProcessIdentity
-{
-    public int Id { get; set; }
-    public int ParentId { get; set; }
-    public string Name { get; set; }
-    public long Started { get; set; }
-}
-
-public static class CiscoBrowserOwnership
-{
-    public const string WindowTitle = "Cisco Secure Client - Web Browser";
-
-    public static bool MatchesTitle(string title)
+    public static int RequestClose()
     {
-        return string.Equals(title, WindowTitle, StringComparison.Ordinal);
+        List<IntPtr> handles = ListVisibleWindows();
+        int requested = 0;
+        for (int index = 0; index < handles.Count; index++)
+        {
+            if (PostMessage(handles[index], 0x0010, IntPtr.Zero, IntPtr.Zero))
+            {
+                requested++;
+            }
+        }
+
+        return requested;
     }
 
-    // Read only the candidate owner's ancestry. Checking creation order rejects
-    // stale parent IDs that have since been reused by a newer process.
-    public static CiscoProcessIdentity[] Trace(int ownerId,
-        IDictionary<int, CiscoProcessIdentity> snapshot, Func<int, CiscoProcessIdentity> readLive)
+    public static bool HasVisibleWindow()
     {
-        var chain = new List<CiscoProcessIdentity>();
-        var visited = new HashSet<int>();
-        long childStarted = long.MaxValue;
-        for (int depth = 0; depth < 32 && ownerId > 0 && visited.Add(ownerId); depth++)
-        {
-            CiscoProcessIdentity entry;
-            if (!snapshot.TryGetValue(ownerId, out entry)) return null;
-            CiscoProcessIdentity live = readLive(ownerId);
-            if (live == null || live.Id != ownerId || live.Started <= 0 || live.Started > childStarted ||
-                !string.Equals(live.Name, entry.Name, StringComparison.OrdinalIgnoreCase)) return null;
-            chain.Add(new CiscoProcessIdentity { Id = ownerId, ParentId = entry.ParentId,
-                Name = live.Name, Started = live.Started });
-            if (string.Equals(live.Name, "acwebhelper", StringComparison.OrdinalIgnoreCase)) return chain.ToArray();
-            childStarted = live.Started;
-            ownerId = entry.ParentId;
-        }
-        return null;
+        return ListVisibleWindows().Count > 0;
     }
 
-    public static bool SameChain(CiscoProcessIdentity[] before, CiscoProcessIdentity[] after)
+    private static List<IntPtr> ListVisibleWindows()
     {
-        if (before == null || after == null || before.Length == 0 || before.Length != after.Length) return false;
-        for (int index = 0; index < before.Length; index++)
+        ProcessIds.Clear();
+        Process[] processes = Process.GetProcessesByName("acwebhelper");
+        for (int index = 0; index < processes.Length; index++)
         {
-            if (before[index].Id != after[index].Id || before[index].Started != after[index].Started ||
-                // The acwebhelper root's own parent is outside the qualifying chain.
-                (index < before.Length - 1 && before[index].ParentId != after[index].ParentId) ||
-                !string.Equals(before[index].Name, after[index].Name, StringComparison.OrdinalIgnoreCase)) return false;
+            try
+            {
+                ProcessIds.Add(processes[index].Id);
+            }
+            finally
+            {
+                processes[index].Dispose();
+            }
         }
+
+        FoundHandles.Clear();
+        if (ProcessIds.Count == 0)
+        {
+            return new List<IntPtr>();
+        }
+
+        EnumWindows(WindowCallback, IntPtr.Zero);
+        return new List<IntPtr>(FoundHandles);
+    }
+
+    private static bool OnWindow(IntPtr handle, IntPtr lParam)
+    {
+        uint processId;
+        GetWindowThreadProcessId(handle, out processId);
+        if (!ContainsProcessId((int)processId) || !IsWindowVisible(handle))
+        {
+            return true;
+        }
+
+        FoundHandles.Add(handle);
         return true;
     }
 
-    public static CiscoProcessIdentity ReadLive(int id)
+    private static bool ContainsProcessId(int processId)
     {
-        using (Process process = Process.GetProcessById(id))
-            return new CiscoProcessIdentity { Id = id, Name = process.ProcessName,
-                Started = process.StartTime.ToUniversalTime().Ticks };
-    }
-
-    public static Dictionary<int, CiscoProcessIdentity> Snapshot()
-    {
-        var result = new Dictionary<int, CiscoProcessIdentity>();
-        IntPtr snapshot = CreateToolhelp32Snapshot(0x00000002, 0);
-        if (snapshot == new IntPtr(-1)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
-        try
+        for (int index = 0; index < ProcessIds.Count; index++)
         {
-            var entry = new ProcessEntry { Size = (uint)Marshal.SizeOf(typeof(ProcessEntry)) };
-            if (!Process32First(snapshot, ref entry))
+            if (ProcessIds[index] == processId)
             {
-                int error = Marshal.GetLastWin32Error();
-                if (error != 18) throw new System.ComponentModel.Win32Exception(error);
-                return result;
-            }
-            do
-            {
-                result[(int)entry.ProcessId] = new CiscoProcessIdentity {
-                    Id = (int)entry.ProcessId, ParentId = (int)entry.ParentProcessId,
-                    Name = Path.GetFileNameWithoutExtension(entry.Executable) };
-                entry.Size = (uint)Marshal.SizeOf(typeof(ProcessEntry));
-            } while (Process32Next(snapshot, ref entry));
-            int lastError = Marshal.GetLastWin32Error();
-            if (lastError != 18) throw new System.ComponentModel.Win32Exception(lastError);
-            return result;
-        }
-        finally { CloseHandle(snapshot); }
-    }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct ProcessEntry
-    {
-        public uint Size, Usage, ProcessId;
-        public UIntPtr DefaultHeapId;
-        public uint ModuleId, Threads, ParentProcessId;
-        public int PriorityClassBase;
-        public uint Flags;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string Executable;
-    }
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint processId);
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool Process32First(IntPtr snapshot, ref ProcessEntry entry);
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool Process32Next(IntPtr snapshot, ref ProcessEntry entry);
-    [DllImport("kernel32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool CloseHandle(IntPtr handle);
-}
-
-public static class CiscoWindowSafety
-{
-    public static CiscoWindowRule[] Rules = new CiscoWindowRule[0];
-    public static int LastError { get; private set; }
-    public static bool BrowserHostPresent { get; private set; }
-    public static string BrowserReason { get; private set; }
-    private static readonly Dictionary<string, string> Hashes = new Dictionary<string, string>();
-
-    public static bool Matches(CiscoWindowRule rule, string action, string path,
-        string hash, string windowClass, string title)
-    {
-        return rule != null && !string.IsNullOrWhiteSpace(rule.ExecutablePath) &&
-            !string.IsNullOrWhiteSpace(rule.Sha256) && !string.IsNullOrWhiteSpace(rule.WindowClass) &&
-            !string.IsNullOrWhiteSpace(rule.WindowTitle) &&
-            string.Equals(rule.Action, action, StringComparison.Ordinal) &&
-            string.Equals(rule.ExecutablePath, path, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(rule.Sha256, hash, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(rule.WindowClass, windowClass, StringComparison.Ordinal) &&
-            string.Equals(rule.WindowTitle, title, StringComparison.Ordinal);
-    }
-
-    public static bool IsCandidateProcess(string action, string processName)
-    {
-        if (action == "CloseBrowser")
-            return string.Equals(processName, "acwebhelper", StringComparison.OrdinalIgnoreCase);
-        return action == "DismissNotice" &&
-            (string.Equals(processName, "vpnui", StringComparison.OrdinalIgnoreCase) ||
-             string.Equals(processName, "csc_ui", StringComparison.OrdinalIgnoreCase) ||
-             string.Equals(processName, "acwebhelper", StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static string ReadHash(string path, long started)
-    {
-        FileInfo info = new FileInfo(path);
-        if (!info.Exists || info.Length > 64 * 1024 * 1024) return "";
-        string key = path + "|" + started + "|" + info.Length + "|" + info.LastWriteTimeUtc.Ticks;
-        string value;
-        if (Hashes.TryGetValue(key, out value)) return value;
-        using (SHA256 hash = SHA256.Create())
-        using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
-            value = BitConverter.ToString(hash.ComputeHash(stream)).Replace("-", "");
-        if (Hashes.Count >= 32) Hashes.Clear();
-        Hashes[key] = value;
-        return value;
-    }
-
-    public static List<CiscoWindowTarget> Find(string action, out int unverified)
-    {
-        if (action == "CloseBrowser") return FindBrowser(out unverified);
-        LastError = 0;
-        List<CiscoWindowTarget> approved = new List<CiscoWindowTarget>();
-        HashSet<int> candidates = new HashSet<int>();
-        string[] names = action == "CloseBrowser" ? new string[] { "acwebhelper" } :
-            new string[] { "acwebhelper", "vpnui", "csc_ui" };
-        foreach (string name in names)
-        {
-            foreach (Process process in Process.GetProcessesByName(name))
-            {
-                using (process)
-                {
-                    try { candidates.Add(process.Id); }
-                    catch (InvalidOperationException) { }
-                }
-            }
-        }
-        int skipped = 0;
-        bool enumerated = EnumWindows(delegate(IntPtr handle, IntPtr unused)
-        {
-            if (!IsWindowVisible(handle)) return true;
-            uint pid;
-            GetWindowThreadProcessId(handle, out pid);
-            if (!candidates.Contains((int)pid)) return true;
-            try
-            {
-                using (Process process = Process.GetProcessById((int)pid))
-                {
-                    if (!IsCandidateProcess(action, process.ProcessName)) return true;
-                    skipped++;
-                    // Avoid opening protected processes or hashing executables unless a
-                    // rule for this operation exists.
-                    bool hasRule = Array.Exists(Rules, rule => rule.Action == action);
-                    if (!hasRule) return true;
-                    string path = process.MainModule.FileName;
-                    long started = process.StartTime.ToUniversalTime().Ticks;
-                    string windowClass = ReadClass(handle);
-                    string title = ReadText(handle);
-                    foreach (CiscoWindowRule rule in Rules)
-                    {
-                        if (rule.Action != action ||
-                            !string.Equals(rule.ExecutablePath, path, StringComparison.OrdinalIgnoreCase) ||
-                            rule.WindowClass != windowClass || rule.WindowTitle != title) continue;
-                        if (Matches(rule, action, path, ReadHash(path, started), windowClass, title))
-                        {
-                            approved.Add(new CiscoWindowTarget { Handle = handle, ProcessId = (int)pid,
-                                ProcessStarted = started, Rule = rule });
-                            skipped--;
-                            break;
-                        }
-                    }
-                }
-            }
-            catch (ArgumentException) { /* Process exited during enumeration. */ }
-            catch (InvalidOperationException) { LastError = 6; }
-            catch (System.ComponentModel.Win32Exception ex) { LastError = ex.NativeErrorCode; }
-            catch (Exception ex) { LastError = ex.HResult; }
-            return true;
-        }, IntPtr.Zero);
-        if (!enumerated) LastError = Marshal.GetLastWin32Error();
-        unverified = skipped;
-        return approved;
-    }
-
-    private static List<CiscoWindowTarget> FindBrowser(out int unverified)
-    {
-        LastError = 0;
-        BrowserHostPresent = false;
-        BrowserReason = "No matching title";
-        var matches = new List<CiscoWindowTarget>();
-        int skipped = 0;
-        try
-        {
-            Dictionary<int, CiscoProcessIdentity> processes = CiscoBrowserOwnership.Snapshot();
-            foreach (CiscoProcessIdentity process in processes.Values)
-                if (string.Equals(process.Name, "acwebhelper", StringComparison.OrdinalIgnoreCase)) BrowserHostPresent = true;
-            bool enumerated = EnumWindows(delegate(IntPtr handle, IntPtr unused)
-            {
-                if (!IsWindowVisible(handle) || !CiscoBrowserOwnership.MatchesTitle(ReadText(handle))) return true;
-                skipped++;
-                uint owner;
-                GetWindowThreadProcessId(handle, out owner);
-                try
-                {
-                    CiscoProcessIdentity[] chain = CiscoBrowserOwnership.Trace((int)owner, processes, CiscoBrowserOwnership.ReadLive);
-                    if (chain != null)
-                    {
-                        matches.Add(new CiscoWindowTarget { Handle = handle, ProcessId = (int)owner,
-                            ProcessStarted = chain[0].Started, BrowserOwnership = chain });
-                        skipped--;
-                    }
-                }
-                catch (System.ComponentModel.Win32Exception error) { LastError = error.NativeErrorCode; }
-                catch (Exception error) { LastError = error.HResult; }
                 return true;
-            }, IntPtr.Zero);
-            if (!enumerated) LastError = Marshal.GetLastWin32Error();
-            if (matches.Count + skipped > 1) BrowserReason = "Multiple matching titles";
-            else if (skipped > 0 || LastError != 0) BrowserReason = "Window ownership could not be confirmed";
-            else if (matches.Count == 1) BrowserReason = "Exact title and Cisco ownership confirmed";
-        }
-        catch (System.ComponentModel.Win32Exception error) { LastError = error.NativeErrorCode; BrowserReason = "Process snapshot unavailable"; }
-        catch (Exception error) { LastError = error.HResult; BrowserReason = "Process snapshot unavailable"; }
-        unverified = skipped;
-        return matches;
-    }
-
-    public static bool StillSameWindow(CiscoWindowTarget target)
-    {
-        return Presence(target) == 1;
-    }
-
-    // 0 = gone/replaced/hidden, 1 = the original visible window, -1 = unknown.
-    public static int Presence(CiscoWindowTarget target)
-    {
-        if (target == null || !IsWindow(target.Handle) || !IsWindowVisible(target.Handle)) return 0;
-        uint pid;
-        GetWindowThreadProcessId(target.Handle, out pid);
-        if ((int)pid != target.ProcessId) return 0;
-        try
-        {
-            using (Process process = Process.GetProcessById(target.ProcessId))
-                return process.StartTime.ToUniversalTime().Ticks == target.ProcessStarted ? 1 : 0;
-        }
-        catch (ArgumentException) { return 0; }
-        catch (Exception error) { LastError = error.HResult; return -1; }
-    }
-
-    public static bool Revalidate(CiscoWindowTarget target)
-    {
-        if (!StillSameWindow(target) || !IsWindowVisible(target.Handle)) return false;
-        try
-        {
-            if (target.BrowserOwnership != null)
-                return CiscoBrowserOwnership.MatchesTitle(ReadText(target.Handle)) &&
-                    CiscoBrowserOwnership.SameChain(target.BrowserOwnership, CiscoBrowserOwnership.Trace(
-                        target.ProcessId, CiscoBrowserOwnership.Snapshot(), CiscoBrowserOwnership.ReadLive));
-            if (target.Rule == null || target.Rule.Action != "DismissNotice") return false;
-            using (Process process = Process.GetProcessById(target.ProcessId))
-            {
-                string path = process.MainModule.FileName;
-                return Matches(target.Rule, target.Rule.Action, path,
-                    ReadHash(path, target.ProcessStarted), ReadClass(target.Handle), ReadText(target.Handle));
             }
         }
-        catch (Exception) { return false; }
-    }
 
-    public static bool RequestClose(CiscoWindowTarget target, Stopwatch clock)
-    {
-        LastError = 0;
-        if (target == null || target.BrowserOwnership == null) return false;
-        // Recount just before sending, in case another matching window appeared.
-        int unverified;
-        List<CiscoWindowTarget> current = FindBrowser(out unverified);
-        if (current.Count != 1 || unverified != 0 || LastError != 0 || current[0].Handle != target.Handle ||
-            !CiscoBrowserOwnership.SameChain(target.BrowserOwnership, current[0].BrowserOwnership)) return false;
-        if (!Revalidate(target)) { BrowserReason = "Window identity changed before closing"; return false; }
-        if (clock == null || clock.ElapsedMilliseconds >= 2000) { LastError = 1460; BrowserReason = "Close deadline reached"; return false; }
-        if (PostMessage(target.Handle, 0x0010, IntPtr.Zero, IntPtr.Zero)) return true;
-        LastError = Marshal.GetLastWin32Error();
-        BrowserReason = "Windows rejected the close request";
         return false;
     }
 
-    public static string ReadText(IntPtr handle)
+    private delegate bool EnumWindowsProc(IntPtr handle, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr handle, out uint processId);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr handle);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PostMessage(IntPtr handle, uint message, IntPtr wParam, IntPtr lParam);
+}
+'@
+
+If ($Null -Eq ([System.Management.Automation.PSTypeName]"CiscoBrowserCloser").Type) {
+    Add-Type -TypeDefinition $CiscoBrowserSource -Language CSharp
+}
+
+$CiscoFailoverNoticeSource = @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class CiscoFailoverNotice
+{
+    private const string NoticeMarker = "retry logging on with the service provider";
+    private static bool FoundNotice;
+    private static IntPtr OkButton;
+
+    public static bool TryDismiss()
+    {
+        try
+        {
+            FoundNotice = false;
+            OkButton = IntPtr.Zero;
+            EnumWindows(OnWindow, IntPtr.Zero);
+            if (!FoundNotice || OkButton == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            PostMessage(OkButton, 0x00F5, IntPtr.Zero, IntPtr.Zero);
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private static bool OnWindow(IntPtr handle, IntPtr lParam)
+    {
+        if (!IsWindowVisible(handle))
+        {
+            return true;
+        }
+
+        FoundNotice = false;
+        OkButton = IntPtr.Zero;
+        EnumChildWindows(handle, OnChild, IntPtr.Zero);
+        if (FoundNotice && OkButton != IntPtr.Zero)
+        {
+            return false;
+        }
+
+        FoundNotice = false;
+        OkButton = IntPtr.Zero;
+        return true;
+    }
+
+    private static bool OnChild(IntPtr handle, IntPtr lParam)
+    {
+        string text = ReadText(handle);
+        if (text.IndexOf(NoticeMarker, StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            FoundNotice = true;
+        }
+
+        if (IsOkButton(text) && IsButton(handle))
+        {
+            OkButton = handle;
+        }
+
+        return true;
+    }
+
+    private static bool IsOkButton(string name)
+    {
+        if (name == null)
+        {
+            return false;
+        }
+
+        string trimmed = name.Replace("&", "").Trim();
+        return string.Equals(trimmed, "OK", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsButton(IntPtr handle)
+    {
+        string className = ReadClassName(handle);
+        if (string.Equals(className, "Button", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return className.IndexOf("BUTTON", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static string ReadText(IntPtr handle)
     {
         StringBuilder text = new StringBuilder(2048);
         GetWindowText(handle, text, text.Capacity);
         return text.ToString();
     }
 
-    public static string ReadClass(IntPtr handle)
+    private static string ReadClassName(IntPtr handle)
     {
         StringBuilder text = new StringBuilder(256);
         GetClassName(handle, text, text.Capacity);
         return text.ToString();
     }
 
-    public static bool Visible(IntPtr handle) { return IsWindowVisible(handle); }
-
-    public static IntPtr FindNoticeButton(IntPtr dialog)
-    {
-        bool marker = false;
-        List<IntPtr> buttons = new List<IntPtr>();
-        EnumChildWindows(dialog, delegate(IntPtr child, IntPtr unused)
-        {
-            if (!IsWindowVisible(child)) return true;
-            string text = ReadText(child);
-            if (text.IndexOf("retry logging on with the service provider", StringComparison.OrdinalIgnoreCase) >= 0)
-                marker = true;
-            if (ReadClass(child) == "Button" && IsWindowEnabled(child) &&
-                string.Equals(text.Replace("&", "").Trim(), "OK", StringComparison.OrdinalIgnoreCase))
-                buttons.Add(child);
-            return true;
-        }, IntPtr.Zero);
-        return marker && buttons.Count == 1 ? buttons[0] : IntPtr.Zero;
-    }
-
-    public static bool RequestDismiss(CiscoWindowTarget target, Stopwatch clock)
-    {
-        LastError = 0;
-        if (target == null || target.BrowserOwnership != null || target.Rule == null || target.Rule.Action != "DismissNotice") return false;
-        if (!Revalidate(target)) return false;
-        IntPtr button = FindNoticeButton(target.Handle);
-        if (button == IntPtr.Zero || !StillSameWindow(target)) return false;
-        uint pid;
-        GetWindowThreadProcessId(button, out pid);
-        if ((int)pid != target.ProcessId || !IsChild(target.Handle, button)) return false;
-        if (clock == null || clock.ElapsedMilliseconds >= 5000) { LastError = 1460; return false; }
-        if (PostMessage(button, 0x00F5, IntPtr.Zero, IntPtr.Zero)) return true;
-        LastError = Marshal.GetLastWin32Error();
-        return false;
-    }
-
     private delegate bool EnumWindowsProc(IntPtr handle, IntPtr lParam);
-    [DllImport("user32.dll", SetLastError = true)]
+    private delegate bool EnumChildProc(IntPtr handle, IntPtr lParam);
+
+    [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool EnumChildWindows(IntPtr parent, EnumWindowsProc callback, IntPtr lParam);
-    [DllImport("user32.dll")]
-    private static extern uint GetWindowThreadProcessId(IntPtr handle, out uint processId);
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool IsWindow(IntPtr handle);
+    private static extern bool EnumChildWindows(IntPtr parent, EnumChildProc callback, IntPtr lParam);
+
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool IsWindowVisible(IntPtr handle);
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool IsWindowEnabled(IntPtr handle);
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool IsChild(IntPtr parent, IntPtr child);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetWindowText(IntPtr handle, StringBuilder text, int maxCount);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetClassName(IntPtr handle, StringBuilder text, int maxCount);
-    [DllImport("user32.dll", SetLastError = true)]
+
+    [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool PostMessage(IntPtr handle, uint message, IntPtr wParam, IntPtr lParam);
 }
-
-public static class CiscoBrowserCloser
-{
-    private static CiscoWindowTarget Target;
-    private static bool Attempted;
-    private static Stopwatch Clock;
-    public static int LastError { get; private set; }
-    public static string LastReason { get; private set; }
-    public static void Begin() { Target = null; Attempted = false; LastError = 0; LastReason = "Started"; Clock = Stopwatch.StartNew(); }
-    public static void Stop() { if (Clock != null) Clock.Stop(); Clock = null; Target = null; }
-
-    // Called every 250 ms for at most two seconds. Exactly one close request
-    // is allowed per operation, and only one exact-title Cisco-owned window qualifies.
-    public static string Poll()
-    {
-        if (Clock == null) return "None";
-        if (Target != null)
-        {
-            int presence = CiscoWindowSafety.Presence(Target);
-            LastError = CiscoWindowSafety.LastError;
-            if (presence == 0) { LastReason = "Window no longer visible"; return "Closed"; }
-            if (presence < 0) { LastReason = "Window presence unavailable"; return "Manual"; }
-            LastReason = "Close requested; window still visible";
-            return Clock.ElapsedMilliseconds >= 2000 ? "StillOpen" : "Waiting";
-        }
-        if (Attempted) return "Manual";
-        if (Clock.ElapsedMilliseconds >= 2000) { LastReason = "Close deadline reached"; return "Manual"; }
-        int unverified;
-        List<CiscoWindowTarget> matches = CiscoWindowSafety.Find("CloseBrowser", out unverified);
-        LastError = CiscoWindowSafety.LastError;
-        LastReason = CiscoWindowSafety.BrowserReason;
-        if (matches.Count > 1 || unverified > 0 || LastError != 0) return "Manual";
-        if (matches.Count == 1)
-        {
-            if (Clock.ElapsedMilliseconds >= 2000) return "Manual";
-            Attempted = true;
-            Target = matches[0];
-            if (!CiscoWindowSafety.RequestClose(Target, Clock))
-            {
-                LastError = CiscoWindowSafety.LastError;
-                LastReason = "Close request not accepted; " + CiscoWindowSafety.BrowserReason;
-                Target = null;
-                return "Manual";
-            }
-            LastReason = "Normal window-close request posted";
-            return "Waiting";
-        }
-        // Accommodate a delayed popup when Cisco's helper is already running.
-        return CiscoWindowSafety.BrowserHostPresent && Clock.ElapsedMilliseconds < 2000 ? "Waiting" : "None";
-    }
-}
-
-public static class CiscoFailoverNotice
-{
-    private static CiscoWindowTarget Target;
-    private static bool Attempted;
-    private static Stopwatch Clock;
-    public static int LastError { get; private set; }
-    public static void Begin() { Target = null; Attempted = false; LastError = 0; Clock = Stopwatch.StartNew(); }
-    public static void Stop() { Target = null; Attempted = true; if (Clock != null) Clock.Stop(); Clock = null; }
-    public static string Poll()
-    {
-        if (Clock == null || Clock.ElapsedMilliseconds >= 5000) return "Manual";
-        if (Target != null)
-        {
-            int presence = CiscoWindowSafety.Presence(Target);
-            LastError = CiscoWindowSafety.LastError;
-            return presence == 0 ? "Dismissed" : (presence < 0 ? "Manual" : "Requested");
-        }
-        if (Attempted) return "Manual";
-        int unverified;
-        List<CiscoWindowTarget> matches = CiscoWindowSafety.Find("DismissNotice", out unverified);
-        LastError = CiscoWindowSafety.LastError;
-        if (matches.Count > 1) return "Manual";
-        if (matches.Count == 0) return "Waiting";
-        if (Clock.ElapsedMilliseconds >= 5000) return "Manual";
-        Attempted = true;
-        if (!CiscoWindowSafety.RequestDismiss(matches[0], Clock))
-        {
-            LastError = CiscoWindowSafety.LastError;
-            return "Manual";
-        }
-        Target = matches[0];
-        return "Requested";
-    }
-}
 '@
 
-If ($Null -Eq ([System.Management.Automation.PSTypeName]"CiscoWindowSafety").Type) {
-    Add-Type -TypeDefinition $CiscoBrowserSource -Language CSharp
+If ($Null -Eq ([System.Management.Automation.PSTypeName]"CiscoFailoverNotice").Type) {
+    Add-Type -TypeDefinition $CiscoFailoverNoticeSource -Language CSharp
 }
 
 $NetworkChangeRelaySource = @'
 using System;
 using System.Net.NetworkInformation;
-using System.Runtime.InteropServices;
 using System.Windows.Threading;
 
 public static class NetworkChangeRelay
 {
-    private static readonly object Gate = new object();
     private static bool IsListening;
-    private static bool Pending;
-    private static int Generation;
     private static Dispatcher Dispatcher;
     private static Action Callback;
 
     public static void Start(Dispatcher dispatcher, Action callback)
     {
         Stop();
-        lock (Gate)
-        {
-            Dispatcher = dispatcher;
-            Callback = callback;
-            IsListening = true;
-            NetworkChange.NetworkAddressChanged += OnAddressChanged;
-            NetworkChange.NetworkAvailabilityChanged += OnAvailabilityChanged;
-        }
+        Dispatcher = dispatcher;
+        Callback = callback;
+        NetworkChange.NetworkAddressChanged += OnAddressChanged;
+        NetworkChange.NetworkAvailabilityChanged += OnAvailabilityChanged;
+        IsListening = true;
     }
 
     public static void Stop()
     {
-        lock (Gate)
+        if (!IsListening)
         {
-            Generation++;
-            if (IsListening)
-            {
-                NetworkChange.NetworkAddressChanged -= OnAddressChanged;
-                NetworkChange.NetworkAvailabilityChanged -= OnAvailabilityChanged;
-            }
-            IsListening = false;
-            Pending = false;
-            Callback = null;
-            Dispatcher = null;
+            return;
         }
+
+        NetworkChange.NetworkAddressChanged -= OnAddressChanged;
+        NetworkChange.NetworkAvailabilityChanged -= OnAvailabilityChanged;
+        IsListening = false;
+        Callback = null;
+        Dispatcher = null;
     }
 
-    private static void OnAddressChanged(object sender, EventArgs args) { Dispatch(); }
-    private static void OnAvailabilityChanged(object sender, NetworkAvailabilityEventArgs args) { Dispatch(); }
+    private static void OnAddressChanged(object sender, EventArgs e)
+    {
+        Dispatch();
+    }
+
+    private static void OnAvailabilityChanged(object sender, NetworkAvailabilityEventArgs e)
+    {
+        Dispatch();
+    }
 
     private static void Dispatch()
     {
-        lock (Gate)
+        Dispatcher dispatcher = Dispatcher;
+        Action callback = Callback;
+        if (dispatcher == null || callback == null)
         {
-            if (!IsListening || Pending || Dispatcher == null ||
-                Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished) return;
-            int generation = Generation;
-            Pending = true;
-            try
-            {
-                Dispatcher.BeginInvoke(new Action(delegate()
-                {
-                    Action callback;
-                    lock (Gate)
-                    {
-                        // Stop invalidates actions already queued on the dispatcher.
-                        if (!IsListening || generation != Generation) return;
-                        Pending = false;
-                        callback = Callback;
-                    }
-                    if (callback != null) callback();
-                }));
-            }
-            catch (InvalidOperationException) { Pending = false; }
+            return;
         }
-    }
-}
 
-// Coordinates are device pixels; the caller converts them through WPF's
-// presentation source, keeping placement in the window's coordinate system.
-public static class WindowWorkArea
-{
-    [StructLayout(LayoutKind.Sequential)]
-    private struct Rect { public int Left, Top, Right, Bottom; }
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MonitorInfo { public int Size; public Rect Monitor, Work; public uint Flags; }
-    [DllImport("user32.dll")]
-    private static extern IntPtr MonitorFromWindow(IntPtr window, uint flags);
-    [DllImport("user32.dll", CharSet = CharSet.Auto)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
-    public static int[] Get(IntPtr window)
-    {
-        MonitorInfo info = new MonitorInfo();
-        info.Size = Marshal.SizeOf(typeof(MonitorInfo));
-        IntPtr monitor = MonitorFromWindow(window, 2);
-        if (monitor == IntPtr.Zero || !GetMonitorInfo(monitor, ref info)) return null;
-        return new int[] { info.Work.Left, info.Work.Top, info.Work.Right, info.Work.Bottom };
+        dispatcher.BeginInvoke(callback);
     }
 }
 '@
@@ -1304,62 +879,13 @@ If ($Null -Eq ([System.Management.Automation.PSTypeName]"NetworkChangeRelay").Ty
     Add-Type -TypeDefinition $NetworkChangeRelaySource -ReferencedAssemblies "WindowsBase" -Language CSharp
 }
 
-# Plain HTTP lets a captive portal redirect the browser to its sign-in page.
-# If this request passes through, Microsoft returns "Microsoft Connect Test".
-$Script:TriggerUrl = "http://www.msftconnecttest.com/connecttest.txt"
+# Windows captive-portal probe. A portal that intercepts this address shows its sign-in page.
+$Script:TriggerUrl = "http://www.msftconnecttest.com/redirect"
 $Script:LinkState = "Unavailable"
+$Script:WifiStatusReady = $False
+$Script:ConnectedArmed = $False
 $Script:IsOpening = $False
 $Script:SsidWarningShown = $False
-$Script:LastLoggedDiagnostic = 0
-$Script:AppFolder = Split-Path -Parent $PSCommandPath
-
-Function Import-CiscoWindowRules {
-    Param([String]$Path = (Join-Path $Script:AppFolder "CiscoWindowRules.json"))
-
-    [CiscoWindowSafety]::Rules = [CiscoWindowRule[]]@()
-    If (-Not (Test-Path -LiteralPath $Path)) { Return }
-    Try {
-        If ((Get-Item -LiteralPath $Path).Length -Gt 65536) { Throw "Rules file is too large." }
-        $Settings = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
-        If ($Settings.SchemaVersion -Ne 1 -Or $Null -Eq $Settings.Rules -Or @($Settings.Rules).Count -Gt 16) {
-            Throw "Invalid rules schema."
-        }
-        $Rules = New-Object 'System.Collections.Generic.List[CiscoWindowRule]'
-        ForEach ($Item in @($Settings.Rules)) {
-            If ($Item.Action -Eq "CloseBrowser") {
-                Write-SignInLog "[INFO] Legacy CloseBrowser rule ignored; browser closing uses the built-in title and process ownership."
-                Continue
-            }
-            If ($Item.Action -Ne "DismissNotice" -Or
-                [String]::IsNullOrWhiteSpace($Item.ExecutablePath) -Or
-                $Item.ExecutablePath -NotMatch '^[a-zA-Z]:\\' -Or
-                $Item.Sha256 -NotMatch '^[0-9a-fA-F]{64}$' -Or
-                [String]::IsNullOrWhiteSpace($Item.WindowClass) -Or
-                [String]::IsNullOrWhiteSpace($Item.WindowTitle)) { Throw "Incomplete window identity." }
-            $FullPath = [IO.Path]::GetFullPath($Item.ExecutablePath)
-            $Drive = New-Object IO.DriveInfo ([IO.Path]::GetPathRoot($FullPath))
-            If ($Drive.DriveType -Ne [IO.DriveType]::Fixed -Or [IO.Path]::GetExtension($FullPath) -Ne ".exe" -Or
-                -Not [CiscoWindowSafety]::IsCandidateProcess($Item.Action, [IO.Path]::GetFileNameWithoutExtension($FullPath))) {
-                Throw "Unsupported process for this operation."
-            }
-            $Rule = New-Object CiscoWindowRule
-            $Rule.Action = $Item.Action
-            $Rule.ExecutablePath = $FullPath
-            $Rule.Sha256 = $Item.Sha256
-            $Rule.WindowClass = $Item.WindowClass
-            $Rule.WindowTitle = $Item.WindowTitle
-            $Rules.Add($Rule)
-        }
-        [CiscoWindowSafety]::Rules = $Rules.ToArray()
-        Write-SignInLog ("[INFO] Optional Cisco notice rules loaded: " + $Rules.Count)
-    }
-    Catch {
-        Write-SignInError -Operation "Cisco notice rules rejected; notice dismissal remains manual" -Exception $_.Exception
-    }
-}
-
-Import-CiscoWindowRules
-Write-SignInLog "[INFO] Cisco browser closing uses the exact confirmed title and process ownership; no rule file is required."
 
 Function New-FrozenBrush {
     Param(
@@ -1380,7 +906,6 @@ Function Show-ActionResult {
         [System.Windows.Media.Brush]$Foreground
     )
 
-    If ($Script:IsClosing) { Return }
     $Script:ResultText.Text = $Message
     $Script:ResultText.Foreground = $Foreground
     $Script:ResultText.Visibility = [System.Windows.Visibility]::Visible
@@ -1405,7 +930,7 @@ Function Get-ConnectedWifiLabel {
     }
     Catch {
         If ($Script:SsidWarningShown -Eq $False) {
-            Write-SignInError -Operation "Wi-Fi network name unavailable" -Exception $_.Exception
+            Write-Host "[WARN] Could not read the Wi-Fi network name."
             $Script:SsidWarningShown = $True
         }
     }
@@ -1473,18 +998,6 @@ Function Set-WifiStatusAppearance {
             $Script:HelpTitle.Text = "Need help?"
             $Script:HelpBody.Text = "Wait until Wi-Fi shows connected, then open the sign-in page."
         }
-        "Unavailable" {
-            $Script:StatusBadge.Background = $Script:IdleBrush
-            $Script:StatusMark.Text = [String]([Char]0xE946)
-            $Script:StatusCard.Background = [System.Windows.Media.Brushes]::WhiteSmoke
-            $Script:StatusCard.BorderBrush = $Script:IdleBrush
-            $Script:StatusText.Foreground = $Script:TitleBrush
-            Set-NetworkButtonLabel -Label "Select`nNetwork"
-            Set-StepBadge -Badge $Script:Step1Badge -Mark $Script:Step1Mark -Title $Script:Step1Title -BadgeBrush $Script:InactiveStepBrush -MarkBrush $Script:InactiveTitleBrush -TitleBrush $Script:InactiveTitleBrush
-            Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:Step2Title -BadgeBrush $Script:InactiveStepBrush -MarkBrush $Script:InactiveTitleBrush -TitleBrush $Script:InactiveTitleBrush
-            $Script:HelpTitle.Text = "Need help?"
-            $Script:HelpBody.Text = "Wi-Fi status could not be read. Check Windows Wi-Fi settings and try again."
-        }
         Default {
             $Script:StatusBadge.Background = $Script:OfflineBrush
             $Script:StatusMark.Text = [String]([Char]0xE711)
@@ -1500,22 +1013,32 @@ Function Set-WifiStatusAppearance {
     }
 }
 
-Function Get-WifiSnapshot { Return [WifiMonitor]::Query() }
-
 Function Update-WifiStatus {
-    If ($Script:IsClosing -Or $Script:IsUpdatingStatus) { Return }
-    $Script:IsUpdatingStatus = $True
     Try {
-        $Snapshot = Get-WifiSnapshot
-        $Script:LinkState = [String]$Snapshot.State
-        If ($Script:LinkState -Ne $Script:LastLoggedLinkState) {
-            Write-SignInLog ("[INFO] Wi-Fi state is " + $Script:LinkState + ".")
-            $Script:LastLoggedLinkState = $Script:LinkState
+        $Snapshot = [WifiMonitor]::Query()
+        $ReportedState = [String]$Snapshot.State
+        $PreviousState = $Script:LinkState
+        $FirstRefresh = $Script:WifiStatusReady -Ne $True
+        $Script:WifiStatusReady = $True
+        If ($ReportedState -Eq "Connected") {
+            $HoldConnecting = ($FirstRefresh -Eq $False) -And ($PreviousState -Ne "Connected") -And ($Script:ConnectedArmed -Ne $True)
+            If ($HoldConnecting -Eq $True) {
+                $Script:ConnectedArmed = $True
+                $Script:LinkState = "Connecting"
+            }
+            Else {
+                $Script:ConnectedArmed = $False
+                $Script:LinkState = "Connected"
+            }
+        }
+        Else {
+            $Script:ConnectedArmed = $False
+            $Script:LinkState = $ReportedState
         }
 
-        If ($Snapshot.DiagnosticCode -Ne $Script:LastLoggedDiagnostic) {
-            Write-SignInLog ("[INFO] WLAN diagnostic code=" + $Snapshot.DiagnosticCode)
-            $Script:LastLoggedDiagnostic = $Snapshot.DiagnosticCode
+        If ($Script:LinkState -Ne $Script:LastLoggedLinkState) {
+            Write-SignInLog ("[INFO] Wi-Fi state is " + $Script:LinkState + ". " + [String]$Snapshot.Detail)
+            $Script:LastLoggedLinkState = $Script:LinkState
         }
 
         Switch ($Script:LinkState) {
@@ -1545,8 +1068,8 @@ Function Update-WifiStatus {
             $Script:NetworkText.Text = "No Wi-Fi adapter was found."
         }
         Default {
-            Set-WifiStatusAppearance -Kind "Unavailable"
-            $Script:StatusText.Text = "Wi-Fi status unavailable"
+            Set-WifiStatusAppearance -Kind "Offline"
+            $Script:StatusText.Text = "Not connected to Wi-Fi"
             $Script:NetworkText.Text = [String]$Snapshot.Detail
         }
     }
@@ -1564,14 +1087,10 @@ Function Update-WifiStatus {
         Update-SignInButtonState
     }
     Catch {
-        Write-SignInError -Operation "Wi-Fi status update failed" -Exception $_.Exception
-        $Script:LinkState = "Unavailable"
-        Set-WifiStatusAppearance -Kind "Unavailable"
-        $Script:StatusText.Text = "Wi-Fi status unavailable"
-        $Script:NetworkText.Text = "Could not read Wi-Fi status."
-        Update-SignInButtonState
+        $StatusError = [String]$Error[0]
+        Write-SignInLog ("[ERROR] Wi-Fi status update failed: " + $StatusError)
+        Throw
     }
-    Finally { $Script:IsUpdatingStatus = $False }
 }
 
 Function Update-SignInButtonState {
@@ -1579,37 +1098,29 @@ Function Update-SignInButtonState {
         Return
     }
 
-    $WifiConnected = $Script:LinkState -Eq "Connected"
+    $StatusIsConnected = $Script:StatusText.Text -Eq "Connected to Wi-Fi"
+    $WifiConnected = ($Script:LinkState -Eq "Connected") -And ($StatusIsConnected -Eq $True)
     $SignInBusy = $Script:IsOpening -Eq $True
-    $Script:OpenSignInButton.IsEnabled = $WifiConnected -And (-Not $SignInBusy) -And (-Not $Script:IsClosing)
+    $Script:OpenSignInButton.IsEnabled = ($WifiConnected -Eq $True) -And ($SignInBusy -Eq $False)
 }
 
 Function Start-SignInBrowser {
-    $TriggerUri = $Null
-    If ($Script:TriggerUrl -Match '[\s"]' -Or
-        -Not [Uri]::TryCreate($Script:TriggerUrl, [UriKind]::Absolute, [Ref]$TriggerUri) -Or
-        $TriggerUri.Scheme -Ne "http" -Or [String]::IsNullOrWhiteSpace($TriggerUri.Host)) {
-        Throw "The sign-in trigger must be an absolute HTTP URL."
+    $EdgeCandidates = @(
+        (Join-Path $Env:ProgramFiles "Microsoft\Edge\Application\msedge.exe")
+    )
+    $ProgramFilesX86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
+    If ([String]::IsNullOrWhiteSpace($ProgramFilesX86) -Eq $False) {
+        $EdgeCandidates += (Join-Path $ProgramFilesX86 "Microsoft\Edge\Application\msedge.exe")
     }
-    $EdgeCandidates = @()
-    ForEach ($BaseFolder in @($Env:ProgramFiles, [Environment]::GetEnvironmentVariable("ProgramFiles(x86)"), $Env:LOCALAPPDATA)) {
-        If (-Not [String]::IsNullOrWhiteSpace($BaseFolder)) {
-            $EdgeCandidates += Join-Path $BaseFolder "Microsoft\Edge\Application\msedge.exe"
-        }
-    }
-    ForEach ($EdgePath in ($EdgeCandidates | Select-Object -Unique)) {
-        If (Test-Path -LiteralPath $EdgePath -PathType Leaf) {
-            $Script:AttemptedBrowser = "Microsoft Edge"
-            Write-SignInLog "[INFO] Browser launch requested: Edge."
-            Start-Process -FilePath $EdgePath -ArgumentList ('"' + $Script:TriggerUrl + '"') -ErrorAction Stop
-            Write-SignInLog "[INFO] Edge launch request accepted; page load and authentication are unverified."
+
+    ForEach ($EdgePath in $EdgeCandidates) {
+        If (Test-Path -LiteralPath $EdgePath) {
+            Start-Process -FilePath $EdgePath -ArgumentList $Script:TriggerUrl
             Return "Edge"
         }
     }
-    $Script:AttemptedBrowser = "your default browser"
-    Write-SignInLog "[INFO] Edge was not found; default-browser launch requested."
-    Start-Process -FilePath $Script:TriggerUrl -ErrorAction Stop
-    Write-SignInLog "[INFO] Default-browser launch request accepted; page load and authentication are unverified."
+
+    Start-Process -FilePath $Script:TriggerUrl
     Return "Default"
 }
 
@@ -1624,152 +1135,137 @@ Function Open-WifiNetworks {
             Write-SignInLog "[INFO] Opened Wi-Fi settings."
         }
         Catch {
-            Write-SignInError -Operation "Could not open Wi-Fi settings" -Exception $_.Exception
+            Write-SignInLog ("[WARN] Could not open Wi-Fi settings: " + [String]$Error[0])
         }
     }
 }
 
 Function Get-SignInResultMessage {
-    Param([String]$CiscoState, [String]$Browser)
-    $Lead = "Opening the Wi-Fi sign-in page in your default browser."
-    If ($Browser -Eq "Edge") { $Lead = "Opening the Wi-Fi sign-in page in Microsoft Edge." }
-    If ($CiscoState -In @("Manual", "StillOpen")) {
-        Return ($Lead + " If Cisco has a Wi-Fi sign-in window open, close that window, then try again.")
+    Param(
+        [String]$CiscoState,
+        [String]$Browser
+    )
+
+    $Lead = "Launching the authentication page in your default browser."
+    If ($Browser -Eq "Edge") {
+        $Lead = "Launching the authentication page in Microsoft Edge."
     }
-    If ($Script:LinkState -Ne "Connected") {
-        Return ($Lead + " Check your Wi-Fi connection if the page does not load.")
+    If ($CiscoState -Eq "StillOpen") {
+        $Lead = $Lead + " If the sign-in page does not appear, try again."
     }
+
+    If ($Script:LinkState -Eq "RadioOff") {
+        Return ($Lead + " Turn Wi-Fi on to load the sign-in page.")
+    }
+
+    If ($Script:LinkState -Eq "Disconnected") {
+        Return ($Lead + " Connect to a Wi-Fi network to load the sign-in page.")
+    }
+
     Return $Lead
 }
 
 Function Complete-SignInLaunch {
-    Param([String]$CiscoState)
-    If ($Script:IsClosing) { Return }
+    Param(
+        [String]$CiscoState
+    )
+
     Try {
-        $Script:AttemptedBrowser = "the browser"
         $Browser = Start-SignInBrowser
-        If ($CiscoState -In @("Manual", "StillOpen") -Or $Browser -Ne "Edge" -Or $Script:LinkState -Ne "Connected") {
-            Show-ActionResult -Message (Get-SignInResultMessage -CiscoState $CiscoState -Browser $Browser) -Foreground $Script:WarningTextBrush
+        $Message = Get-SignInResultMessage -CiscoState $CiscoState -Browser $Browser
+        $Brush = $Script:SuccessTextBrush
+        If (($CiscoState -Eq "StillOpen") -Or ($Browser -Ne "Edge") -Or ($Script:LinkState -Eq "RadioOff") -Or ($Script:LinkState -Eq "Disconnected")) {
+            $Brush = $Script:WarningTextBrush
         }
-        Else { $Script:ResultText.Visibility = [System.Windows.Visibility]::Collapsed }
+
+        If (($CiscoState -Eq "StillOpen") -Or ($Browser -Ne "Edge") -Or ($Script:LinkState -Eq "RadioOff") -Or ($Script:LinkState -Eq "Disconnected")) {
+            Show-ActionResult -Message $Message -Foreground $Brush
+        }
+        Else {
+            $Script:ResultText.Visibility = [System.Windows.Visibility]::Collapsed
+        }
     }
     Catch {
-        Write-SignInError -Operation ("Launch failed: " + $Script:AttemptedBrowser) -Exception $_.Exception
-        Show-ActionResult -Message ("Could not open " + $Script:AttemptedBrowser + ". Open your browser and visit " + $Script:TriggerUrl + " to try signing in.") -Foreground $Script:ErrorTextBrush
+        $OpenError = $Error[0].Exception.Message
+        Show-ActionResult -Message ("Could not open Microsoft Edge. " + $OpenError) -Foreground $Script:ErrorTextBrush
     }
     Finally {
-        If (-Not $Script:IsClosing -And $Null -Ne $Script:Cooldown) {
+        $Script:Cooldown = New-Object System.Windows.Threading.DispatcherTimer
+        $Script:Cooldown.Interval = [TimeSpan]::FromSeconds(1)
+        $Script:Cooldown.Add_Tick({
             $Script:Cooldown.Stop()
-            $Script:Cooldown.Start()
-        }
+            $Script:IsOpening = $False
+            Update-SignInButtonState
+        })
+        $Script:Cooldown.Start()
     }
 }
 
-Function Get-CiscoCloseState { Return [CiscoBrowserCloser]::Poll() }
-
-Function Get-CiscoNoticeState { Return [CiscoFailoverNotice]::Poll() }
-
 Function Complete-SignInAfterCiscoClose {
-    If ($Script:IsClosing -Or $Script:CiscoCloseFinished) { Return }
-    Try {
-        $CiscoState = Get-CiscoCloseState
-        If ($CiscoState -Eq "Waiting") { Return }
-        Write-SignInLog ("[INFO] Cisco close outcome=" + $CiscoState + "; code=" + [CiscoBrowserCloser]::LastError + "; reason=" + [CiscoBrowserCloser]::LastReason)
+    If ($Script:CiscoCloseFinished -Eq $True) {
+        Return
     }
-    Catch {
-        Write-SignInError -Operation "Cisco close operation failed; continuing with manual handling" -Exception $_.Exception
-        $CiscoState = "Manual"
+
+    $StillOpen = [CiscoBrowserCloser]::HasVisibleWindow()
+    $TimedOut = (Get-Date) -Gt $Script:CiscoCloseDeadline
+    If (($StillOpen -Eq $True) -And ($TimedOut -Eq $False)) {
+        Return
     }
+
     $Script:CiscoCloseFinished = $True
-    $Script:CiscoCloseTimer.Stop()
-    [CiscoBrowserCloser]::Stop()
+    If ($Script:CiscoCloseTimer -Ne $Null) {
+        $Script:CiscoCloseTimer.Stop()
+    }
+
+    $CiscoState = "StillOpen"
+    If ($StillOpen -Eq $False) {
+        $CiscoState = "Closed"
+    }
+
     Complete-SignInLaunch -CiscoState $CiscoState
 }
 
 Function Invoke-SignInPage {
-    If ($Script:IsClosing -Or $Script:IsOpening) { Return }
-    Update-WifiStatus
-    If ($Script:LinkState -Ne "Connected") { Return }
+    If ($Script:IsOpening -Eq $True) {
+        Return
+    }
+
     $Script:IsOpening = $True
-    Update-SignInButtonState
+    $Script:OpenSignInButton.IsEnabled = $False
     Write-SignInLog "[INFO] Open sign-in page clicked."
-    Try {
-        Start-FailoverNoticeMonitor
-        [CiscoBrowserCloser]::Begin()
+    Start-FailoverNoticeMonitor
+    $CloseRequests = [CiscoBrowserCloser]::RequestClose()
+    Write-SignInLog ("[INFO] Cisco browser close requests=" + $CloseRequests)
+    If ($CloseRequests -Gt 0) {
+        Show-ActionResult -Message "Opening the sign-in page..." -Foreground $Script:WarningTextBrush
         $Script:CiscoCloseFinished = $False
+        $Script:CiscoCloseDeadline = (Get-Date).AddSeconds(2)
+        $Script:CiscoCloseTimer = New-Object System.Windows.Threading.DispatcherTimer
+        $Script:CiscoCloseTimer.Interval = [TimeSpan]::FromMilliseconds(100)
+        $Script:CiscoCloseTimer.Add_Tick({ Complete-SignInAfterCiscoClose })
         $Script:CiscoCloseTimer.Start()
-        Complete-SignInAfterCiscoClose
+        Return
     }
-    Catch {
-        Write-SignInError -Operation "Sign-in preparation failed; continuing with manual handling" -Exception $_.Exception
-        $Script:CiscoCloseTimer.Stop()
-        [CiscoBrowserCloser]::Stop()
-        Complete-SignInLaunch -CiscoState "Manual"
-    }
-}
 
-Function Get-SignInWorkArea {
-    $Area = [System.Windows.SystemParameters]::WorkArea
-    $Source = [System.Windows.PresentationSource]::FromVisual($Script:Window)
-    If ($Null -Ne $Source -And $Null -Ne $Source.CompositionTarget) {
-        $Helper = New-Object System.Windows.Interop.WindowInteropHelper $Script:Window
-        $Pixels = [WindowWorkArea]::Get($Helper.Handle)
-        If ($Null -Ne $Pixels) {
-            $Transform = $Source.CompositionTarget.TransformFromDevice
-            $First = $Transform.Transform((New-Object System.Windows.Point $Pixels[0], $Pixels[1]))
-            $Last = $Transform.Transform((New-Object System.Windows.Point $Pixels[2], $Pixels[3]))
-            $Area = New-Object System.Windows.Rect $First, $Last
-        }
-    }
-    Return $Area
-}
-
-Function Update-WindowBounds {
-    If ($Script:IsClosing -Or $Script:IsUpdatingBounds -Or $Null -Eq $Script:Window) { Return }
-    $Script:IsUpdatingBounds = $True
-    Try {
-        $Area = Get-SignInWorkArea
-        $PreferredWidth = $Script:PreferredWindowWidth
-        If ($PreferredWidth -Le 0) { $PreferredWidth = 520 }
-        $Script:Window.MaxWidth = [Math]::Max(1, $Area.Width - 4)
-        $Script:Window.MaxHeight = [Math]::Max(1, $Area.Height - 4)
-        $Script:Window.Width = [Math]::Min($PreferredWidth, $Script:Window.MaxWidth)
-        $Header = $Script:Window.FindName("HeaderBanner")
-        If ($Null -Ne $Header.Source -And $Script:BannerAspect -Gt 0) {
-            $Header.Width = [Math]::Max(1, $Script:Window.Width - 30)
-            $Header.Height = [Math]::Round($Header.Width * $Script:BannerAspect)
-        }
-        $Scroller = $Script:Window.FindName("ContentScroller")
-        $Content = $Script:Window.FindName("MainContent")
-        If ($Script:Window.Width -Lt $PreferredWidth) {
-            $Content.Width = [Math]::Max(1, $PreferredWidth - 54)
-            $Scroller.HorizontalScrollBarVisibility = [System.Windows.Controls.ScrollBarVisibility]::Auto
-        }
-        Else {
-            $Content.Width = [Double]::NaN
-            $Scroller.HorizontalScrollBarVisibility = [System.Windows.Controls.ScrollBarVisibility]::Disabled
-        }
-        $Width = [Math]::Min($Script:Window.Width, $Area.Width)
-        $Height = [Math]::Min($Script:Window.ActualHeight, $Script:Window.MaxHeight)
-        If (-Not [Double]::IsNaN($Script:Window.Left)) {
-            $Script:Window.Left = [Math]::Max($Area.Left, [Math]::Min($Script:Window.Left, $Area.Right - $Width))
-        }
-        If (-Not [Double]::IsNaN($Script:Window.Top)) {
-            $Script:Window.Top = [Math]::Max($Area.Top, [Math]::Min($Script:Window.Top, $Area.Bottom - $Height))
-        }
-    }
-    Finally { $Script:IsUpdatingBounds = $False }
+    Complete-SignInLaunch -CiscoState "None"
 }
 
 Function Move-SignInWindowToTopRight {
-    $Area = [System.Windows.SystemParameters]::WorkArea
-    $Script:Window.Left = $Area.Left
-    $Script:Window.Top = $Area.Top
-    Update-WindowBounds
     $Script:Window.UpdateLayout()
-    $Script:Window.Left = [Math]::Max($Area.Left, $Area.Right - $Script:Window.ActualWidth - 2)
-    $Script:Window.Top = $Area.Top + 2
-    Update-WindowBounds
+    $WindowWidth = $Script:Window.ActualWidth
+    $WindowHeight = $Script:Window.ActualHeight
+    If ($WindowWidth -Le 0) {
+        $WindowWidth = $Script:Window.Width
+    }
+    If ($WindowHeight -Le 0) {
+        $WindowHeight = 240
+    }
+
+    $WorkArea = [System.Windows.SystemParameters]::WorkArea
+    $EdgeGap = 16
+    $ShadowMargin = 14
+    $Script:Window.Left = $WorkArea.Right - $WindowWidth - $EdgeGap + $ShadowMargin
+    $Script:Window.Top = $WorkArea.Top + $EdgeGap - $ShadowMargin
 }
 
 Function Update-WindowCornerClip {
@@ -1791,77 +1287,60 @@ Function Update-WindowCornerClip {
 }
 
 Function Start-FailoverNoticeMonitor {
-    If ($Script:IsClosing) { Return }
-    $Script:FailoverNoticeTimer.Stop()
-    [CiscoFailoverNotice]::Begin()
-    $Script:LastNoticeState = ""
-    $Script:FailoverNoticeClock = [Diagnostics.Stopwatch]::StartNew()
-    $Script:FailoverNoticeTimer.Start()
-    Write-SignInLog "[INFO] Cisco notice monitor started; five-second limit."
-}
-
-Function Update-FailoverNoticeMonitor {
-    If ($Script:IsClosing) { Return }
-    Try {
-        If ($Script:FailoverNoticeClock.Elapsed.TotalSeconds -Ge 5) {
-            $Script:FailoverNoticeTimer.Stop()
-            [CiscoFailoverNotice]::Stop()
-            Write-SignInLog "[INFO] Cisco notice monitor timed out; no dismissal confirmed."
-            Return
-        }
-        $State = Get-CiscoNoticeState
-        If ($State -Ne $Script:LastNoticeState) {
-            Write-SignInLog ("[INFO] Cisco notice outcome=" + $State + "; code=" + [CiscoFailoverNotice]::LastError)
-            $Script:LastNoticeState = $State
-        }
-        If ($State -In @("Dismissed", "Manual")) {
-            $Script:FailoverNoticeTimer.Stop()
-            [CiscoFailoverNotice]::Stop()
-        }
-    }
-    Catch {
+    If ($Script:FailoverNoticeTimer -Ne $Null) {
         $Script:FailoverNoticeTimer.Stop()
-        Write-SignInError -Operation "Cisco notice monitor failed; manual handling is available" -Exception $_.Exception
     }
-}
 
-Function Initialize-SignInTimers {
-    $Script:Timer = New-Object System.Windows.Threading.DispatcherTimer
-    $Script:Timer.Interval = [TimeSpan]::FromSeconds(2)
-    $Script:Timer.Add_Tick({ Update-WifiStatus; Update-WindowBounds })
-    $Script:CiscoCloseTimer = New-Object System.Windows.Threading.DispatcherTimer
-    $Script:CiscoCloseTimer.Interval = [TimeSpan]::FromMilliseconds(250)
-    $Script:CiscoCloseTimer.Add_Tick({ Complete-SignInAfterCiscoClose })
+    $Script:FailoverNoticeDeadline = (Get-Date).AddSeconds(5)
     $Script:FailoverNoticeTimer = New-Object System.Windows.Threading.DispatcherTimer
     $Script:FailoverNoticeTimer.Interval = [TimeSpan]::FromMilliseconds(250)
     $Script:FailoverNoticeTimer.Add_Tick({ Update-FailoverNoticeMonitor })
-    $Script:Cooldown = New-Object System.Windows.Threading.DispatcherTimer
-    $Script:Cooldown.Interval = [TimeSpan]::FromSeconds(1)
-    $Script:Cooldown.Add_Tick({
-        $Script:Cooldown.Stop()
-        If (-Not $Script:IsClosing) {
-            $Script:IsOpening = $False
-            Update-SignInButtonState
+    $Script:FailoverNoticeTimer.Start()
+    Write-SignInLog "[INFO] Watching for the Cisco failover notice for 5 seconds."
+}
+
+Function Update-FailoverNoticeMonitor {
+    Try {
+        If ((Get-Date) -Gt $Script:FailoverNoticeDeadline) {
+            $Script:FailoverNoticeTimer.Stop()
+            Write-SignInLog "[INFO] Cisco failover notice was not shown. Monitor stopped."
+            Return
         }
-    })
+
+        If ([CiscoFailoverNotice]::TryDismiss() -Eq $True) {
+            $Script:FailoverNoticeTimer.Stop()
+            Write-SignInLog "[INFO] Cisco failover notice was dismissed."
+        }
+    }
+    Catch {
+        If ($Script:FailoverNoticeTimer -Ne $Null) {
+            $Script:FailoverNoticeTimer.Stop()
+        }
+
+        Write-SignInLog ("[ERROR] Cisco failover notice monitor failed: " + [String]$Error[0])
+    }
 }
 
 Function Close-SignInWindow {
-    If ($Script:IsClosing) { Return }
-    $Script:IsClosing = $True
-    ForEach ($TimerName in @("Timer", "CiscoCloseTimer", "FailoverNoticeTimer", "Cooldown")) {
-        $TimerVariable = Get-Variable -Name $TimerName -Scope Script -ErrorAction SilentlyContinue
-        If ($Null -Ne $TimerVariable -And $Null -Ne $TimerVariable.Value) { $TimerVariable.Value.Stop() }
+    If ($Script:Timer -Ne $Null) {
+        $Script:Timer.Stop()
     }
-    If ($Null -Ne ([System.Management.Automation.PSTypeName]"NetworkChangeRelay").Type) { [NetworkChangeRelay]::Stop() }
-    If ($Null -Ne ([System.Management.Automation.PSTypeName]"CiscoBrowserCloser").Type) { [CiscoBrowserCloser]::Stop() }
-    If ($Null -Ne ([System.Management.Automation.PSTypeName]"CiscoFailoverNotice").Type) { [CiscoFailoverNotice]::Stop() }
-    If ($Null -Ne $Script:FailoverNoticeClock) { $Script:FailoverNoticeClock.Stop() }
-    Write-SignInLog "[INFO] All timers stopped and network events detached."
+
+    If ($Script:CiscoCloseTimer -Ne $Null) {
+        $Script:CiscoCloseTimer.Stop()
+    }
+
+    If ($Null -Ne ([System.Management.Automation.PSTypeName]"NetworkChangeRelay").Type) {
+        [NetworkChangeRelay]::Stop()
+    }
+
+    If ($Script:FailoverNoticeTimer -Ne $Null) {
+        $Script:FailoverNoticeTimer.Stop()
+    }
 }
 
 Function Set-WindowArtwork {
-    $AssetFolder = Join-Path $Script:AppFolder "Assets"
+    $AssetFolder = Join-Path (Split-Path -Parent $PSCommandPath) "Assets"
     $TitleIconPath = Join-Path $AssetFolder "TitleIcon.png"
     $TitleIcon = $Script:Window.FindName("TitleIcon")
 
@@ -1882,7 +1361,7 @@ Function Set-WindowArtwork {
             }
         }
         Catch {
-            Write-SignInError -Operation "App icon could not be loaded" -Exception $_.Exception
+            Write-SignInLog ("[WARN] App icon could not be loaded: " + [String]$Error[0])
         }
     }
 
@@ -1916,13 +1395,11 @@ Function Set-WindowArtwork {
             $HeaderBanner.Height = $BannerHeight
             [System.Windows.Media.RenderOptions]::SetBitmapScalingMode($HeaderBanner, [System.Windows.Media.BitmapScalingMode]::Fant)
             $Script:Window.Width = $BannerWidth + (($ShadowMargin + $FrameThickness) * 2)
-            $Script:PreferredWindowWidth = $Script:Window.Width
-            $Script:BannerAspect = [Double]$HeaderImage.PixelHeight / [Double]$HeaderImage.PixelWidth
             $HeaderBanner.Source = $HeaderImage
         }
     }
     Catch {
-        Write-SignInError -Operation "Header banner could not be loaded" -Exception $_.Exception
+        Write-SignInLog ("[WARN] Header banner could not be loaded: " + [String]$Error[0])
     }
 }
 
@@ -2101,7 +1578,7 @@ $WindowXaml = @'
             <Grid.RowDefinitions>
                 <RowDefinition Height="44" />
                 <RowDefinition Height="Auto" />
-                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
             <Grid x:Name="TitleBar" Background="White">
@@ -2151,8 +1628,7 @@ $WindowXaml = @'
                    VerticalAlignment="Top"
                    SnapsToDevicePixels="True" />
 
-            <ScrollViewer x:Name="ContentScroller" Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
-            <StackPanel x:Name="MainContent" Margin="12,16,12,18">
+            <StackPanel Grid.Row="2" Margin="12,16,12,18">
                     <Grid Margin="10,0,10,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
@@ -2292,7 +1768,6 @@ $WindowXaml = @'
                         </StackPanel>
                     </Grid>
             </StackPanel>
-            </ScrollViewer>
             </Grid>
         </Border>
     </Grid>
@@ -2344,11 +1819,11 @@ $Script:TitleBar.Add_MouseLeftButtonDown({
             $Script:Window.DragMove()
         }
         Catch {
-            Write-SignInError -Operation "Window drag did not start" -Exception $_.Exception
+            Write-SignInLog ("[WARN] Window drag did not start: " + [String]$Error[0])
         }
     }
 })
-$Script:Window.Add_SizeChanged({ Update-WindowCornerClip; Update-WindowBounds })
+$Script:Window.Add_SizeChanged({ Update-WindowCornerClip })
 $Script:Window.Add_StateChanged({
     If ($Script:Window.WindowState -Eq [System.Windows.WindowState]::Maximized) {
         $Script:Window.WindowState = [System.Windows.WindowState]::Normal
@@ -2362,42 +1837,44 @@ $Script:Window.Add_Loaded({
     Update-WifiStatus
     $Script:Timer.Start()
 })
-$Script:Window.Add_Activated({ Update-WifiStatus; Update-WindowBounds })
+$Script:Window.Add_Activated({ Update-WifiStatus })
 $Script:Window.Add_Closed({
     Write-SignInLog "[INFO] Sign-in window Closed event."
     Close-SignInWindow
 })
 $Script:Window.Dispatcher.Add_UnhandledException({
     Param($Sender, $EventArgs)
-    Write-SignInError -Operation "Unexpected dispatcher exception; closing safely" -Exception $EventArgs.Exception
-    $Script:ExitCode = 1
-    $EventArgs.Handled = $True
-    $Script:Window.Close()
+    $ExceptionText = ""
+    If ($Null -Ne $EventArgs.Exception) {
+        $ExceptionText = $EventArgs.Exception.ToString()
+    }
+    Write-SignInLog ("[ERROR] Dispatcher unhandled exception: " + $ExceptionText)
 })
 $Script:Window.Dispatcher.Add_ShutdownStarted({
     Write-SignInLog "[INFO] Dispatcher shutdown started."
 })
 
-Initialize-SignInTimers
+$Script:Timer = New-Object System.Windows.Threading.DispatcherTimer
+$Script:Timer.Interval = [TimeSpan]::FromSeconds(2)
+$Script:Timer.Add_Tick({ Update-WifiStatus })
 
 $Script:OnNetworkChanged = {
-    If (-Not $Script:IsClosing) { Update-WifiStatus }
+    Write-SignInLog "[INFO] Network change notification."
+    Update-WifiStatus
 }
 [NetworkChangeRelay]::Start($Script:Window.Dispatcher, [System.Action]$Script:OnNetworkChanged)
 
 Write-SignInLog "[INFO] Opening the captive portal sign-in window."
 Write-Host "[INFO] Opening the captive portal sign-in window."
-$Script:Window.ShowDialog() | Out-Null
-Write-SignInLog "[INFO] ShowDialog returned."
-} # Startup and WPF lifetime
+Try {
+    $Script:Window.ShowDialog() | Out-Null
+    Write-SignInLog "[INFO] ShowDialog returned."
+}
 Catch {
-    $Script:ExitCode = 1
-    Write-SignInError -Operation "Application startup or window failed" -Exception $_.Exception
-    Write-Warning "Wi-Fi Assist could not continue. See the diagnostic log in your temporary folder."
+    $DialogError = [String]$Error[0]
+    Write-SignInLog ("[ERROR] ShowDialog ended with an error: " + $DialogError)
+    Write-Error "[ERROR] ShowDialog ended with an error: $DialogError"
 }
-Finally {
-    If (Get-Command Close-SignInWindow -CommandType Function -ErrorAction SilentlyContinue) { Close-SignInWindow }
-    Write-SignInLog ("[INFO] Sign-in script is exiting; code=" + $Script:ExitCode)
-    [SignInDiagnostics]::Stop()
-}
-Exit $Script:ExitCode
+Write-SignInLog "[INFO] Sign-in script is exiting."
+Write-Host "[INFO] Captive portal sign-in window closed."
+Exit 0
