@@ -887,6 +887,7 @@ $Script:SignInUnlocked = $False
 $Script:SignInReadyAt = $Null
 $Script:SignInDelayTimer = $Null
 $Script:SsidWarningShown = $False
+$Script:AgentWasRunning = $Null
 
 Function New-FrozenBrush {
     Param(
@@ -982,8 +983,8 @@ Function Set-WifiStatusAppearance {
             $Script:StatusCard.BorderBrush = $Script:ConnectedBrush
             $Script:StatusText.Foreground = $Script:SuccessTextBrush
             Set-NetworkButtonLabel -Label "Change`nNetwork"
-            Set-StepBadge -Badge $Script:Step1Badge -Mark $Script:Step1Mark -Title $Script:Step1Title -BadgeBrush $Script:ConnectedBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
-            Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:Step2Title -BadgeBrush $Script:OfflineBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
+            Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:Step2Title -BadgeBrush $Script:ConnectedBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
+            Set-StepBadge -Badge $Script:Step3Badge -Mark $Script:Step3Mark -Title $Script:Step3Title -BadgeBrush $Script:OfflineBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
             $Script:HelpTitle.Text = "Tip"
             $Script:HelpBody.Text = "If the sign-in page does not appear, click the ""Open Wi-Fi Sign-In"" button."
         }
@@ -994,8 +995,8 @@ Function Set-WifiStatusAppearance {
             $Script:StatusCard.BorderBrush = $Script:WarningBrush
             $Script:StatusText.Foreground = $Script:WarningTextBrush
             Set-NetworkButtonLabel -Label "Select`nNetwork"
-            Set-StepBadge -Badge $Script:Step1Badge -Mark $Script:Step1Mark -Title $Script:Step1Title -BadgeBrush $Script:WarningBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
-            Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:Step2Title -BadgeBrush $Script:InactiveStepBrush -MarkBrush $Script:InactiveTitleBrush -TitleBrush $Script:InactiveTitleBrush
+            Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:Step2Title -BadgeBrush $Script:WarningBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
+            Set-StepBadge -Badge $Script:Step3Badge -Mark $Script:Step3Mark -Title $Script:Step3Title -BadgeBrush $Script:InactiveStepBrush -MarkBrush $Script:InactiveTitleBrush -TitleBrush $Script:InactiveTitleBrush
             $Script:HelpTitle.Text = "Need help?"
             $Script:HelpBody.Text = "Wait until Wi-Fi status is connected."
         }
@@ -1006,11 +1007,47 @@ Function Set-WifiStatusAppearance {
             $Script:StatusCard.BorderBrush = $Script:OfflineBrush
             $Script:StatusText.Foreground = $Script:ErrorTextBrush
             Set-NetworkButtonLabel -Label "Select`nNetwork"
-            Set-StepBadge -Badge $Script:Step1Badge -Mark $Script:Step1Mark -Title $Script:Step1Title -BadgeBrush $Script:OfflineBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
-            Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:Step2Title -BadgeBrush $Script:InactiveStepBrush -MarkBrush $Script:InactiveTitleBrush -TitleBrush $Script:InactiveTitleBrush
+            Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:Step2Title -BadgeBrush $Script:OfflineBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
+            Set-StepBadge -Badge $Script:Step3Badge -Mark $Script:Step3Mark -Title $Script:Step3Title -BadgeBrush $Script:InactiveStepBrush -MarkBrush $Script:InactiveTitleBrush -TitleBrush $Script:InactiveTitleBrush
             $Script:HelpTitle.Text = "Need help?"
             $Script:HelpBody.Text = "Turn on Wi-Fi and connect to a network (e.g. airline, hotel, café), then return here."
         }
+    }
+
+    Update-AgentStep
+}
+
+Function Test-CscUiRunning {
+    $Agents = @(Get-Process -Name "csc_ui" -ErrorAction SilentlyContinue)
+    Return ($Agents.Count -Gt 0)
+}
+
+Function Update-AgentStep {
+    If ($Null -Eq $Script:Step1Badge) {
+        Return
+    }
+
+    $AgentRunning = Test-CscUiRunning
+    $WhiteBrush = [System.Windows.Media.Brushes]::White
+    If ($AgentRunning -Eq $True) {
+        Set-StepBadge -Badge $Script:Step1Badge -Mark $Script:Step1Mark -Title $Script:Step1Title -BadgeBrush $Script:ConnectedBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
+        $Script:Step1Detail.Text = "Agent is running"
+    }
+    Else {
+        Set-StepBadge -Badge $Script:Step1Badge -Mark $Script:Step1Mark -Title $Script:Step1Title -BadgeBrush $Script:OfflineBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
+        $Script:Step1Detail.Text = "Agent is not running. Please run Cisco Secure Client."
+        Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:Step2Title -BadgeBrush $Script:InactiveStepBrush -MarkBrush $Script:InactiveTitleBrush -TitleBrush $Script:InactiveTitleBrush
+        Set-StepBadge -Badge $Script:Step3Badge -Mark $Script:Step3Mark -Title $Script:Step3Title -BadgeBrush $Script:InactiveStepBrush -MarkBrush $Script:InactiveTitleBrush -TitleBrush $Script:InactiveTitleBrush
+    }
+
+    If ($AgentRunning -Ne $Script:AgentWasRunning) {
+        If ($AgentRunning -Eq $True) {
+            Write-SignInLog "[INFO] Secure Client agent is running."
+        }
+        Else {
+            Write-SignInLog "[INFO] Secure Client agent is not running."
+        }
+        $Script:AgentWasRunning = $AgentRunning
     }
 }
 
@@ -1695,44 +1732,41 @@ $WindowXaml = @'
                    SnapsToDevicePixels="True" />
 
             <StackPanel Grid.Row="2" Margin="12,16,12,18">
-                    <Grid Margin="10,0,10,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <Border x:Name="Step1Badge" Width="28" Height="28" CornerRadius="14" Background="#CA2420">
+                    <StackPanel Margin="4,0,4,0">
+                        <Grid VerticalAlignment="Center">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="Step1Badge" Width="28" Height="28" CornerRadius="14" Background="#CA2420" VerticalAlignment="Center">
                                 <TextBlock x:Name="Step1Mark" Text="1" Foreground="White" FontWeight="Bold" FontSize="13" HorizontalAlignment="Center" VerticalAlignment="Center" />
                             </Border>
-                            <StackPanel Margin="8,0,0,0" VerticalAlignment="Center">
-                                <TextBlock x:Name="Step1Title" Text="Connect to Wi-Fi" FontSize="13" FontWeight="SemiBold" Foreground="#1A2332" />
-                                <TextBlock x:Name="Step1Detail" Text="Join a Wi-Fi network" Margin="0,1,0,0" FontSize="11" Foreground="#8B95A1" />
+                            <StackPanel Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center">
+                                <TextBlock x:Name="Step1Title" Text="Secure Client" FontSize="13" FontWeight="SemiBold" Foreground="#1A2332" />
+                                <TextBlock x:Name="Step1Detail" Text="Agent is not running. Please run Cisco Secure Client." Margin="0,1,0,0" FontSize="11" Foreground="#8B95A1" TextWrapping="Wrap" />
                             </StackPanel>
-                        </StackPanel>
-                        <Path Grid.Column="1"
-                              Margin="8,0"
-                              Width="12"
-                              Height="18"
-                              HorizontalAlignment="Center"
-                              VerticalAlignment="Center"
-                              Stretch="Fill"
-                              Stroke="#9AA3AF"
-                              StrokeThickness="2.4"
-                              StrokeStartLineCap="Round"
-                              StrokeEndLineCap="Round"
-                              StrokeLineJoin="Round"
-                              Data="M 1,1 L 8,9 L 1,17" />
-                        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                        </Grid>
+                        <Border Width="2" Height="10" Margin="13,4,0,4" HorizontalAlignment="Left" Background="#E6E9ED" CornerRadius="1" />
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                             <Border x:Name="Step2Badge" Width="28" Height="28" CornerRadius="14" Background="#E1E5EA">
                                 <TextBlock x:Name="Step2Mark" Text="2" Foreground="#9AA3AF" FontWeight="Bold" FontSize="13" HorizontalAlignment="Center" VerticalAlignment="Center" />
                             </Border>
-                            <StackPanel Margin="8,0,0,0" VerticalAlignment="Center">
-                                <TextBlock x:Name="Step2Title" Text="Open Wi-Fi Sign-In" FontSize="13" FontWeight="SemiBold" Foreground="#9AA3AF" />
-                                <TextBlock x:Name="Step2Detail" Text="Sign-in to get online" Margin="0,1,0,0" FontSize="11" Foreground="#8B95A1" TextWrapping="Wrap" />
+                            <StackPanel Margin="10,0,0,0" VerticalAlignment="Center">
+                                <TextBlock x:Name="Step2Title" Text="Connect to Wi-Fi" FontSize="13" FontWeight="SemiBold" Foreground="#9AA3AF" />
+                                <TextBlock x:Name="Step2Detail" Text="Join a Wi-Fi network" Margin="0,1,0,0" FontSize="11" Foreground="#8B95A1" />
                             </StackPanel>
                         </StackPanel>
-                    </Grid>
+                        <Border Width="2" Height="10" Margin="13,4,0,4" HorizontalAlignment="Left" Background="#E6E9ED" CornerRadius="1" />
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Border x:Name="Step3Badge" Width="28" Height="28" CornerRadius="14" Background="#E1E5EA">
+                                <TextBlock x:Name="Step3Mark" Text="3" Foreground="#9AA3AF" FontWeight="Bold" FontSize="13" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                            <StackPanel Margin="10,0,0,0" VerticalAlignment="Center">
+                                <TextBlock x:Name="Step3Title" Text="Open Wi-Fi Sign-In" FontSize="13" FontWeight="SemiBold" Foreground="#9AA3AF" />
+                                <TextBlock x:Name="Step3Detail" Text="Sign-in to get online" Margin="0,1,0,0" FontSize="11" Foreground="#8B95A1" />
+                            </StackPanel>
+                        </StackPanel>
+                    </StackPanel>
 
                     <Border x:Name="StatusCard"
                             Margin="0,16,0,0"
@@ -1851,9 +1885,13 @@ $Script:ResultText = $Script:Window.FindName("ResultText")
 $Script:Step1Badge = $Script:Window.FindName("Step1Badge")
 $Script:Step1Mark = $Script:Window.FindName("Step1Mark")
 $Script:Step1Title = $Script:Window.FindName("Step1Title")
+$Script:Step1Detail = $Script:Window.FindName("Step1Detail")
 $Script:Step2Badge = $Script:Window.FindName("Step2Badge")
 $Script:Step2Mark = $Script:Window.FindName("Step2Mark")
 $Script:Step2Title = $Script:Window.FindName("Step2Title")
+$Script:Step3Badge = $Script:Window.FindName("Step3Badge")
+$Script:Step3Mark = $Script:Window.FindName("Step3Mark")
+$Script:Step3Title = $Script:Window.FindName("Step3Title")
 $Script:ChangeNetworkButton = $Script:Window.FindName("ChangeNetworkButton")
 $Script:ChangeNetworkLabel = $Script:Window.FindName("ChangeNetworkLabel")
 $Script:HelpTitle = $Script:Window.FindName("HelpTitle")
@@ -1863,7 +1901,7 @@ $Script:CloseButton = $Script:Window.FindName("CloseButton")
 $Script:WindowSurface = $Script:Window.FindName("WindowSurface")
 $Script:TitleBar = $Script:Window.FindName("TitleBar")
 
-If (($Null -Eq $Script:StatusCard) -Or ($Null -Eq $Script:StatusBadge) -Or ($Null -Eq $Script:StatusMark) -Or ($Null -Eq $Script:StatusText) -Or ($Null -Eq $Script:NetworkText) -Or ($Null -Eq $Script:OpenSignInButton) -Or ($Null -Eq $Script:ResultText) -Or ($Null -Eq $Script:Step1Badge) -Or ($Null -Eq $Script:Step1Mark) -Or ($Null -Eq $Script:Step1Title) -Or ($Null -Eq $Script:Step2Badge) -Or ($Null -Eq $Script:Step2Mark) -Or ($Null -Eq $Script:Step2Title) -Or ($Null -Eq $Script:ChangeNetworkButton) -Or ($Null -Eq $Script:ChangeNetworkLabel) -Or ($Null -Eq $Script:HelpTitle) -Or ($Null -Eq $Script:HelpBody) -Or ($Null -Eq $Script:MinimizeButton) -Or ($Null -Eq $Script:CloseButton) -Or ($Null -Eq $Script:WindowSurface) -Or ($Null -Eq $Script:TitleBar)) {
+If (($Null -Eq $Script:StatusCard) -Or ($Null -Eq $Script:StatusBadge) -Or ($Null -Eq $Script:StatusMark) -Or ($Null -Eq $Script:StatusText) -Or ($Null -Eq $Script:NetworkText) -Or ($Null -Eq $Script:OpenSignInButton) -Or ($Null -Eq $Script:ResultText) -Or ($Null -Eq $Script:Step1Badge) -Or ($Null -Eq $Script:Step1Mark) -Or ($Null -Eq $Script:Step1Title) -Or ($Null -Eq $Script:Step1Detail) -Or ($Null -Eq $Script:Step2Badge) -Or ($Null -Eq $Script:Step2Mark) -Or ($Null -Eq $Script:Step2Title) -Or ($Null -Eq $Script:Step3Badge) -Or ($Null -Eq $Script:Step3Mark) -Or ($Null -Eq $Script:Step3Title) -Or ($Null -Eq $Script:ChangeNetworkButton) -Or ($Null -Eq $Script:ChangeNetworkLabel) -Or ($Null -Eq $Script:HelpTitle) -Or ($Null -Eq $Script:HelpBody) -Or ($Null -Eq $Script:MinimizeButton) -Or ($Null -Eq $Script:CloseButton) -Or ($Null -Eq $Script:WindowSurface) -Or ($Null -Eq $Script:TitleBar)) {
     Write-SignInLog "[ERROR] The sign-in window could not be loaded."
     Write-Error "[ERROR] The sign-in window could not be loaded."
     Exit 1
