@@ -884,6 +884,8 @@ $Script:TriggerUrl = "http://www.msftconnecttest.com/redirect"
 $Script:LinkState = "Unavailable"
 $Script:IsOpening = $False
 $Script:SignInUnlocked = $False
+$Script:SignInReadyAt = $Null
+$Script:SignInDelayTimer = $Null
 $Script:SsidWarningShown = $False
 
 Function New-FrozenBrush {
@@ -983,7 +985,7 @@ Function Set-WifiStatusAppearance {
             Set-StepBadge -Badge $Script:Step1Badge -Mark $Script:Step1Mark -Title $Script:Step1Title -BadgeBrush $Script:ConnectedBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
             Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:Step2Title -BadgeBrush $Script:OfflineBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
             $Script:HelpTitle.Text = "Tip"
-            $Script:HelpBody.Text = "If the sign-in page doesn't appear, click the button above."
+            $Script:HelpBody.Text = "If the sign-in page does not appear, click the ""Open Wi-Fi Sign-In"" button."
         }
         "Connecting" {
             $Script:StatusBadge.Background = $Script:WarningBrush
@@ -995,7 +997,7 @@ Function Set-WifiStatusAppearance {
             Set-StepBadge -Badge $Script:Step1Badge -Mark $Script:Step1Mark -Title $Script:Step1Title -BadgeBrush $Script:WarningBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
             Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:Step2Title -BadgeBrush $Script:InactiveStepBrush -MarkBrush $Script:InactiveTitleBrush -TitleBrush $Script:InactiveTitleBrush
             $Script:HelpTitle.Text = "Need help?"
-            $Script:HelpBody.Text = "Wait until Wi-Fi shows connected, then open the sign-in page."
+            $Script:HelpBody.Text = "Wait until Wi-Fi status is connected."
         }
         Default {
             $Script:StatusBadge.Background = $Script:OfflineBrush
@@ -1109,20 +1111,57 @@ Function Test-AcwebHelperRunning {
     Return ($Helpers.Count -Gt 0)
 }
 
+Function Stop-SignInEnableDelay {
+    If ($Script:SignInDelayTimer -Ne $Null) {
+        $Script:SignInDelayTimer.Stop()
+        $Script:SignInDelayTimer = $Null
+    }
+}
+
+Function Start-SignInEnableDelay {
+    If ($Script:SignInDelayTimer -Ne $Null) {
+        Return
+    }
+
+    $Script:SignInDelayTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $Script:SignInDelayTimer.Interval = [TimeSpan]::FromSeconds(5)
+    $Script:SignInDelayTimer.Add_Tick({
+        Stop-SignInEnableDelay
+        Update-SignInButtonState
+    })
+    $Script:SignInDelayTimer.Start()
+}
+
 Function Update-SignInButtonState {
     If ($Null -Eq $Script:OpenSignInButton) {
         Return
     }
 
     $WifiConnected = $Script:LinkState -Eq "Connected"
+    $HelperRunning = Test-AcwebHelperRunning
     If ($WifiConnected -Eq $False) {
         $Script:SignInUnlocked = $False
+        $Script:SignInReadyAt = $Null
+        Stop-SignInEnableDelay
     }
-    ElseIf ((Test-AcwebHelperRunning) -Eq $True) {
-        If ($Script:SignInUnlocked -Ne $True) {
-            Write-SignInLog "[INFO] Sign-in button enabled. acwebhelper.exe is running."
+    ElseIf ($Script:SignInUnlocked -Eq $True) {
+        Stop-SignInEnableDelay
+    }
+    ElseIf ($HelperRunning -Eq $True) {
+        If ($Null -Eq $Script:SignInReadyAt) {
+            $Script:SignInReadyAt = Get-Date
+            Start-SignInEnableDelay
+            Write-SignInLog "[INFO] acwebhelper.exe is running. Sign-in button enables in 5 seconds."
         }
-        $Script:SignInUnlocked = $True
+        ElseIf (((Get-Date) - $Script:SignInReadyAt).TotalSeconds -Ge 5) {
+            $Script:SignInUnlocked = $True
+            Stop-SignInEnableDelay
+            Write-SignInLog "[INFO] Sign-in button enabled."
+        }
+    }
+    Else {
+        $Script:SignInReadyAt = $Null
+        Stop-SignInEnableDelay
     }
 
     $SignInBusy = $Script:IsOpening -Eq $True
@@ -1362,6 +1401,8 @@ Function Close-SignInWindow {
     If ($Script:FailoverNoticeTimer -Ne $Null) {
         $Script:FailoverNoticeTimer.Stop()
     }
+
+    Stop-SignInEnableDelay
 }
 
 Function Set-WindowArtwork {
@@ -1688,7 +1729,7 @@ $WindowXaml = @'
                             </Border>
                             <StackPanel Margin="8,0,0,0" VerticalAlignment="Center">
                                 <TextBlock x:Name="Step2Title" Text="Open Wi-Fi Sign-In" FontSize="13" FontWeight="SemiBold" Foreground="#9AA3AF" />
-                                <TextBlock x:Name="Step2Detail" Text="Let Wi-Fi Assist do the rest" Margin="0,1,0,0" FontSize="11" Foreground="#8B95A1" TextWrapping="Wrap" />
+                                <TextBlock x:Name="Step2Detail" Text="Sign-in to get online" Margin="0,1,0,0" FontSize="11" Foreground="#8B95A1" TextWrapping="Wrap" />
                             </StackPanel>
                         </StackPanel>
                     </Grid>
