@@ -956,7 +956,9 @@ Function Set-StepBadge {
 
     $Badge.Background = $BadgeBrush
     $Mark.Foreground = $MarkBrush
-    $Title.Foreground = $TitleBrush
+    If ($Null -Ne $Title) {
+        $Title.Foreground = $TitleBrush
+    }
 }
 
 Function Set-NetworkButtonLabel {
@@ -977,38 +979,32 @@ Function Set-WifiStatusAppearance {
     $WhiteBrush = [System.Windows.Media.Brushes]::White
     Switch ($Kind) {
         "Connected" {
-            $Script:StatusBadge.Background = $Script:ConnectedBrush
-            $Script:StatusMark.Text = [String]([Char]0xE73E)
             $Script:StatusCard.Background = $Script:ConnectedCardBrush
             $Script:StatusCard.BorderBrush = $Script:ConnectedBrush
             $Script:StatusText.Foreground = $Script:SuccessTextBrush
             Set-NetworkButtonLabel -Label "Change`nNetwork"
-            Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:Step2Title -BadgeBrush $Script:ConnectedBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
-            Set-StepBadge -Badge $Script:Step3Badge -Mark $Script:Step3Mark -Title $Script:Step3Title -BadgeBrush $Script:OfflineBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
+            Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:StatusText -BadgeBrush $Script:ConnectedBrush -MarkBrush $WhiteBrush -TitleBrush $Script:SuccessTextBrush
+            Set-StepBadge -Badge $Script:Step3Badge -Mark $Script:Step3Mark -Title $Null -BadgeBrush $Script:OfflineBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
             $Script:HelpTitle.Text = "Tip"
             $Script:HelpBody.Text = "If the sign-in page does not appear, click the ""Open Wi-Fi Sign-In"" button."
         }
         "Connecting" {
-            $Script:StatusBadge.Background = $Script:WarningBrush
-            $Script:StatusMark.Text = [String]([Char]0xE768)
             $Script:StatusCard.Background = $Script:WarningCardBrush
             $Script:StatusCard.BorderBrush = $Script:WarningBrush
             $Script:StatusText.Foreground = $Script:WarningTextBrush
             Set-NetworkButtonLabel -Label "Select`nNetwork"
-            Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:Step2Title -BadgeBrush $Script:WarningBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
-            Set-StepBadge -Badge $Script:Step3Badge -Mark $Script:Step3Mark -Title $Script:Step3Title -BadgeBrush $Script:InactiveStepBrush -MarkBrush $Script:InactiveTitleBrush -TitleBrush $Script:InactiveTitleBrush
+            Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:StatusText -BadgeBrush $Script:WarningBrush -MarkBrush $WhiteBrush -TitleBrush $Script:WarningTextBrush
+            Set-StepBadge -Badge $Script:Step3Badge -Mark $Script:Step3Mark -Title $Null -BadgeBrush $Script:InactiveStepBrush -MarkBrush $Script:InactiveTitleBrush -TitleBrush $Script:InactiveTitleBrush
             $Script:HelpTitle.Text = "Need help?"
             $Script:HelpBody.Text = "Wait until Wi-Fi status is connected."
         }
         Default {
-            $Script:StatusBadge.Background = $Script:OfflineBrush
-            $Script:StatusMark.Text = [String]([Char]0xE711)
             $Script:StatusCard.Background = $Script:OfflineCardBrush
             $Script:StatusCard.BorderBrush = $Script:OfflineBrush
             $Script:StatusText.Foreground = $Script:ErrorTextBrush
             Set-NetworkButtonLabel -Label "Select`nNetwork"
-            Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:Step2Title -BadgeBrush $Script:OfflineBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
-            Set-StepBadge -Badge $Script:Step3Badge -Mark $Script:Step3Mark -Title $Script:Step3Title -BadgeBrush $Script:InactiveStepBrush -MarkBrush $Script:InactiveTitleBrush -TitleBrush $Script:InactiveTitleBrush
+            Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:StatusText -BadgeBrush $Script:OfflineBrush -MarkBrush $WhiteBrush -TitleBrush $Script:ErrorTextBrush
+            Set-StepBadge -Badge $Script:Step3Badge -Mark $Script:Step3Mark -Title $Null -BadgeBrush $Script:InactiveStepBrush -MarkBrush $Script:InactiveTitleBrush -TitleBrush $Script:InactiveTitleBrush
             $Script:HelpTitle.Text = "Need help?"
             $Script:HelpBody.Text = "Turn on Wi-Fi and connect to a network (e.g. airline, hotel, café), then return here."
         }
@@ -1036,8 +1032,10 @@ Function Update-AgentStep {
     Else {
         Set-StepBadge -Badge $Script:Step1Badge -Mark $Script:Step1Mark -Title $Script:Step1Title -BadgeBrush $Script:OfflineBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
         $Script:Step1Detail.Text = "Agent is not running. Please run Cisco Secure Client."
-        Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:Step2Title -BadgeBrush $Script:InactiveStepBrush -MarkBrush $Script:InactiveTitleBrush -TitleBrush $Script:InactiveTitleBrush
-        Set-StepBadge -Badge $Script:Step3Badge -Mark $Script:Step3Mark -Title $Script:Step3Title -BadgeBrush $Script:InactiveStepBrush -MarkBrush $Script:InactiveTitleBrush -TitleBrush $Script:InactiveTitleBrush
+        Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:StatusText -BadgeBrush $Script:InactiveStepBrush -MarkBrush $Script:InactiveTitleBrush -TitleBrush $Script:InactiveTitleBrush
+        Set-StepBadge -Badge $Script:Step3Badge -Mark $Script:Step3Mark -Title $Null -BadgeBrush $Script:InactiveStepBrush -MarkBrush $Script:InactiveTitleBrush -TitleBrush $Script:InactiveTitleBrush
+        $Script:StatusCard.Background = $Script:InactiveCardBrush
+        $Script:StatusCard.BorderBrush = $Script:InactiveStepBrush
     }
 
     If ($AgentRunning -Ne $Script:AgentWasRunning) {
@@ -1515,6 +1513,7 @@ $Script:WarningCardBrush = New-FrozenBrush -Red 0xFF -Green 0xF4 -Blue 0xE5
 $Script:OfflineCardBrush = New-FrozenBrush -Red 0xFD -Green 0xEC -Blue 0xEC
 $Script:TitleBrush = New-FrozenBrush -Red 0x1A -Green 0x23 -Blue 0x32
 $Script:InactiveStepBrush = New-FrozenBrush -Red 0xE1 -Green 0xE5 -Blue 0xEA
+$Script:InactiveCardBrush = New-FrozenBrush -Red 0xF7 -Green 0xF8 -Blue 0xFA
 $Script:InactiveTitleBrush = New-FrozenBrush -Red 0x9A -Green 0xA3 -Blue 0xAF
 $Script:SuccessTextBrush = New-FrozenBrush -Red 0x1F -Green 0x6B -Blue 0x3A
 $Script:WarningTextBrush = New-FrozenBrush -Red 0x8A -Green 0x4B -Blue 0x08
@@ -1747,94 +1746,81 @@ $WindowXaml = @'
                             </StackPanel>
                         </Grid>
                         <Border Width="2" Height="10" Margin="13,4,0,4" HorizontalAlignment="Left" Background="#E6E9ED" CornerRadius="1" />
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <Border x:Name="Step2Badge" Width="28" Height="28" CornerRadius="14" Background="#E1E5EA">
-                                <TextBlock x:Name="Step2Mark" Text="2" Foreground="#9AA3AF" FontWeight="Bold" FontSize="13" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                            </Border>
-                            <StackPanel Margin="10,0,0,0" VerticalAlignment="Center">
-                                <TextBlock x:Name="Step2Title" Text="Connect to Wi-Fi" FontSize="13" FontWeight="SemiBold" Foreground="#9AA3AF" />
-                                <TextBlock x:Name="Step2Detail" Text="Join a Wi-Fi network" Margin="0,1,0,0" FontSize="11" Foreground="#8B95A1" />
-                            </StackPanel>
-                        </StackPanel>
-                        <Border Width="2" Height="10" Margin="13,4,0,4" HorizontalAlignment="Left" Background="#E6E9ED" CornerRadius="1" />
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <Border x:Name="Step3Badge" Width="28" Height="28" CornerRadius="14" Background="#E1E5EA">
-                                <TextBlock x:Name="Step3Mark" Text="3" Foreground="#9AA3AF" FontWeight="Bold" FontSize="13" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                            </Border>
-                            <StackPanel Margin="10,0,0,0" VerticalAlignment="Center">
-                                <TextBlock x:Name="Step3Title" Text="Open Wi-Fi Sign-In" FontSize="13" FontWeight="SemiBold" Foreground="#9AA3AF" />
-                                <TextBlock x:Name="Step3Detail" Text="Sign-in to get online" Margin="0,1,0,0" FontSize="11" Foreground="#8B95A1" />
-                            </StackPanel>
-                        </StackPanel>
                     </StackPanel>
 
-                    <Border x:Name="StatusCard"
-                            Margin="0,16,0,0"
-                            Background="#FDECEC"
-                            BorderBrush="#CA2420"
-                            BorderThickness="2"
-                            CornerRadius="10"
-                            Padding="14,14">
-                        <Grid VerticalAlignment="Center">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <Border x:Name="StatusBadge"
-                                    Width="42"
-                                    Height="42"
-                                    CornerRadius="21"
-                                    Background="#CA2420"
-                                    VerticalAlignment="Center"
-                                    AutomationProperties.AutomationId="WifiStatusDot">
-                                <TextBlock x:Name="StatusMark"
-                                           Text="&#xE711;"
-                                           FontFamily="Segoe MDL2 Assets"
-                                           FontSize="18"
-                                           Foreground="White"
-                                           HorizontalAlignment="Center"
-                                           VerticalAlignment="Center"
-                                           AutomationProperties.AutomationId="WifiStatusMark" />
-                            </Border>
-                            <StackPanel Grid.Column="1" Margin="14,0,10,0" VerticalAlignment="Center">
-                                <TextBlock x:Name="StatusText"
-                                           Text="Checking Wi-Fi..."
-                                           FontSize="16"
-                                           FontWeight="SemiBold"
-                                           Foreground="#1A2332"
-                                           TextWrapping="Wrap"
-                                           AutomationProperties.AutomationId="WifiStatusText" />
-                                <TextBlock x:Name="NetworkText"
-                                           Margin="0,2,0,0"
-                                           FontSize="13"
-                                           Foreground="#5E6874"
-                                           TextWrapping="Wrap"
-                                           AutomationProperties.AutomationId="NetworkText" />
-                            </StackPanel>
-                            <Button x:Name="ChangeNetworkButton"
-                                    Grid.Column="2"
-                                    Style="{StaticResource SecondaryButtonStyle}"
-                                    VerticalAlignment="Center"
-                                    AutomationProperties.AutomationId="ChangeNetworkButton"
-                                    AutomationProperties.Name="Select Network">
-                                <TextBlock x:Name="ChangeNetworkLabel" Text="Select&#x0a;Network" TextAlignment="Center" FontSize="12" FontWeight="SemiBold" />
-                            </Button>
-                        </Grid>
-                    </Border>
+                    <Grid Margin="4,0,4,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Border x:Name="Step2Badge" Width="28" Height="28" CornerRadius="14" Background="#E1E5EA" VerticalAlignment="Center">
+                            <TextBlock x:Name="Step2Mark" Text="2" Foreground="#9AA3AF" FontWeight="Bold" FontSize="13" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <Border x:Name="StatusCard"
+                                Grid.Column="1"
+                                Margin="10,0,0,0"
+                                Background="#F7F8FA"
+                                BorderBrush="#E1E5EA"
+                                BorderThickness="2"
+                                CornerRadius="10"
+                                Padding="14,12">
+                            <Grid VerticalAlignment="Center">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock x:Name="StatusText"
+                                               Text="Checking Wi-Fi..."
+                                               FontSize="15"
+                                               FontWeight="SemiBold"
+                                               Foreground="#9AA3AF"
+                                               TextWrapping="Wrap"
+                                               AutomationProperties.AutomationId="WifiStatusText" />
+                                    <TextBlock x:Name="NetworkText"
+                                               Margin="0,2,0,0"
+                                               FontSize="12"
+                                               Foreground="#5E6874"
+                                               TextWrapping="Wrap"
+                                               AutomationProperties.AutomationId="NetworkText" />
+                                </StackPanel>
+                                <Button x:Name="ChangeNetworkButton"
+                                        Grid.Column="1"
+                                        Margin="10,0,0,0"
+                                        Style="{StaticResource SecondaryButtonStyle}"
+                                        VerticalAlignment="Center"
+                                        AutomationProperties.AutomationId="ChangeNetworkButton"
+                                        AutomationProperties.Name="Select Network">
+                                    <TextBlock x:Name="ChangeNetworkLabel" Text="Select&#x0a;Network" TextAlignment="Center" FontSize="12" FontWeight="SemiBold" />
+                                </Button>
+                            </Grid>
+                        </Border>
+                    </Grid>
 
-                    <Button x:Name="OpenSignInButton"
-                            Margin="0,16,0,0"
-                            Style="{StaticResource SignInButtonStyle}"
-                            IsEnabled="False"
-                            IsDefault="True"
-                            AutomationProperties.AutomationId="OpenSignInButton"
-                            AutomationProperties.Name="Open Wi-Fi Sign-In">
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                            <TextBlock Text="&#xE8A7;" FontFamily="Segoe MDL2 Assets" FontSize="14" Margin="0,1,8,0" VerticalAlignment="Center" />
-                            <TextBlock Text="Open Wi-Fi Sign-In" VerticalAlignment="Center" />
-                        </StackPanel>
-                    </Button>
+                    <Border Width="2" Height="10" Margin="17,4,0,4" HorizontalAlignment="Left" Background="#E6E9ED" CornerRadius="1" />
+
+                    <Grid Margin="4,0,4,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Border x:Name="Step3Badge" Width="28" Height="28" CornerRadius="14" Background="#E1E5EA" VerticalAlignment="Center">
+                            <TextBlock x:Name="Step3Mark" Text="3" Foreground="#9AA3AF" FontWeight="Bold" FontSize="13" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <Button x:Name="OpenSignInButton"
+                                Grid.Column="1"
+                                Margin="10,0,0,0"
+                                Style="{StaticResource SignInButtonStyle}"
+                                IsEnabled="False"
+                                IsDefault="True"
+                                AutomationProperties.AutomationId="OpenSignInButton"
+                                AutomationProperties.Name="Open Wi-Fi Sign-In">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <TextBlock Text="&#xE8A7;" FontFamily="Segoe MDL2 Assets" FontSize="14" Margin="0,1,8,0" VerticalAlignment="Center" />
+                                <TextBlock Text="Open Wi-Fi Sign-In" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Button>
+                    </Grid>
 
                     <TextBlock Margin="0,8,0,0"
                                FontSize="12"
@@ -1876,8 +1862,6 @@ $WindowXaml = @'
 
 $Script:Window = [System.Windows.Markup.XamlReader]::Parse($WindowXaml)
 $Script:StatusCard = $Script:Window.FindName("StatusCard")
-$Script:StatusBadge = $Script:Window.FindName("StatusBadge")
-$Script:StatusMark = $Script:Window.FindName("StatusMark")
 $Script:StatusText = $Script:Window.FindName("StatusText")
 $Script:NetworkText = $Script:Window.FindName("NetworkText")
 $Script:OpenSignInButton = $Script:Window.FindName("OpenSignInButton")
@@ -1888,10 +1872,8 @@ $Script:Step1Title = $Script:Window.FindName("Step1Title")
 $Script:Step1Detail = $Script:Window.FindName("Step1Detail")
 $Script:Step2Badge = $Script:Window.FindName("Step2Badge")
 $Script:Step2Mark = $Script:Window.FindName("Step2Mark")
-$Script:Step2Title = $Script:Window.FindName("Step2Title")
 $Script:Step3Badge = $Script:Window.FindName("Step3Badge")
 $Script:Step3Mark = $Script:Window.FindName("Step3Mark")
-$Script:Step3Title = $Script:Window.FindName("Step3Title")
 $Script:ChangeNetworkButton = $Script:Window.FindName("ChangeNetworkButton")
 $Script:ChangeNetworkLabel = $Script:Window.FindName("ChangeNetworkLabel")
 $Script:HelpTitle = $Script:Window.FindName("HelpTitle")
@@ -1901,7 +1883,7 @@ $Script:CloseButton = $Script:Window.FindName("CloseButton")
 $Script:WindowSurface = $Script:Window.FindName("WindowSurface")
 $Script:TitleBar = $Script:Window.FindName("TitleBar")
 
-If (($Null -Eq $Script:StatusCard) -Or ($Null -Eq $Script:StatusBadge) -Or ($Null -Eq $Script:StatusMark) -Or ($Null -Eq $Script:StatusText) -Or ($Null -Eq $Script:NetworkText) -Or ($Null -Eq $Script:OpenSignInButton) -Or ($Null -Eq $Script:ResultText) -Or ($Null -Eq $Script:Step1Badge) -Or ($Null -Eq $Script:Step1Mark) -Or ($Null -Eq $Script:Step1Title) -Or ($Null -Eq $Script:Step1Detail) -Or ($Null -Eq $Script:Step2Badge) -Or ($Null -Eq $Script:Step2Mark) -Or ($Null -Eq $Script:Step2Title) -Or ($Null -Eq $Script:Step3Badge) -Or ($Null -Eq $Script:Step3Mark) -Or ($Null -Eq $Script:Step3Title) -Or ($Null -Eq $Script:ChangeNetworkButton) -Or ($Null -Eq $Script:ChangeNetworkLabel) -Or ($Null -Eq $Script:HelpTitle) -Or ($Null -Eq $Script:HelpBody) -Or ($Null -Eq $Script:MinimizeButton) -Or ($Null -Eq $Script:CloseButton) -Or ($Null -Eq $Script:WindowSurface) -Or ($Null -Eq $Script:TitleBar)) {
+If (($Null -Eq $Script:StatusCard) -Or ($Null -Eq $Script:StatusText) -Or ($Null -Eq $Script:NetworkText) -Or ($Null -Eq $Script:OpenSignInButton) -Or ($Null -Eq $Script:ResultText) -Or ($Null -Eq $Script:Step1Badge) -Or ($Null -Eq $Script:Step1Mark) -Or ($Null -Eq $Script:Step1Title) -Or ($Null -Eq $Script:Step1Detail) -Or ($Null -Eq $Script:Step2Badge) -Or ($Null -Eq $Script:Step2Mark) -Or ($Null -Eq $Script:Step3Badge) -Or ($Null -Eq $Script:Step3Mark) -Or ($Null -Eq $Script:ChangeNetworkButton) -Or ($Null -Eq $Script:ChangeNetworkLabel) -Or ($Null -Eq $Script:HelpTitle) -Or ($Null -Eq $Script:HelpBody) -Or ($Null -Eq $Script:MinimizeButton) -Or ($Null -Eq $Script:CloseButton) -Or ($Null -Eq $Script:WindowSurface) -Or ($Null -Eq $Script:TitleBar)) {
     Write-SignInLog "[ERROR] The sign-in window could not be loaded."
     Write-Error "[ERROR] The sign-in window could not be loaded."
     Exit 1
