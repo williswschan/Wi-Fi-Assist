@@ -883,6 +883,7 @@ If ($Null -Eq ([System.Management.Automation.PSTypeName]"NetworkChangeRelay").Ty
 $Script:TriggerUrl = "http://www.msftconnecttest.com/redirect"
 $Script:LinkState = "Unavailable"
 $Script:IsOpening = $False
+$Script:SignInUnlocked = $False
 $Script:SsidWarningShown = $False
 
 Function New-FrozenBrush {
@@ -1103,15 +1104,29 @@ Function Update-WifiStatus {
     }
 }
 
+Function Test-AcwebHelperRunning {
+    $Helpers = @(Get-Process -Name "acwebhelper" -ErrorAction SilentlyContinue)
+    Return ($Helpers.Count -Gt 0)
+}
+
 Function Update-SignInButtonState {
     If ($Null -Eq $Script:OpenSignInButton) {
         Return
     }
 
-    $StatusIsConnected = $Script:StatusText.Text -Eq "Connected to Wi-Fi"
-    $WifiConnected = ($Script:LinkState -Eq "Connected") -And ($StatusIsConnected -Eq $True)
+    $WifiConnected = $Script:LinkState -Eq "Connected"
+    If ($WifiConnected -Eq $False) {
+        $Script:SignInUnlocked = $False
+    }
+    ElseIf ((Test-AcwebHelperRunning) -Eq $True) {
+        If ($Script:SignInUnlocked -Ne $True) {
+            Write-SignInLog "[INFO] Sign-in button enabled. acwebhelper.exe is running."
+        }
+        $Script:SignInUnlocked = $True
+    }
+
     $SignInBusy = $Script:IsOpening -Eq $True
-    $Script:OpenSignInButton.IsEnabled = ($WifiConnected -Eq $True) -And ($SignInBusy -Eq $False)
+    $Script:OpenSignInButton.IsEnabled = ($WifiConnected -Eq $True) -And ($Script:SignInUnlocked -Eq $True) -And ($SignInBusy -Eq $False)
 }
 
 Function Start-SignInBrowser {
