@@ -882,8 +882,6 @@ If ($Null -Eq ([System.Management.Automation.PSTypeName]"NetworkChangeRelay").Ty
 # Windows captive-portal probe. A portal that intercepts this address shows its sign-in page.
 $Script:TriggerUrl = "http://www.msftconnecttest.com/redirect"
 $Script:LinkState = "Unavailable"
-$Script:WifiStatusReady = $False
-$Script:ConnectedArmed = $False
 $Script:IsOpening = $False
 $Script:SsidWarningShown = $False
 
@@ -1013,28 +1011,40 @@ Function Set-WifiStatusAppearance {
     }
 }
 
+Function Test-WifiSignInReady {
+    Try {
+        $Null = [Windows.Networking.Connectivity.NetworkInformation, Windows.Networking.Connectivity, ContentType=WindowsRuntime]
+        $Profiles = @([Windows.Networking.Connectivity.NetworkInformation]::GetConnectionProfiles())
+        ForEach ($Profile in $Profiles) {
+            $Adapter = $Profile.NetworkAdapter
+            If ($Null -Eq $Adapter) {
+                Continue
+            }
+            If ([Int]$Adapter.IanaInterfaceType -Ne 71) {
+                Continue
+            }
+            # None = 0. LocalAccess, a captive portal, or Internet all mean Windows has finished connecting.
+            $LevelValue = [Int]$Profile.GetNetworkConnectivityLevel()
+            If ($LevelValue -Ge 1) {
+                Return $True
+            }
+        }
+        Return $False
+    }
+    Catch {
+        Write-SignInLog ("[WARN] Wi-Fi readiness check failed: " + [String]$Error[0])
+        Return $True
+    }
+}
+
 Function Update-WifiStatus {
     Try {
         $Snapshot = [WifiMonitor]::Query()
         $ReportedState = [String]$Snapshot.State
-        $PreviousState = $Script:LinkState
-        $FirstRefresh = $Script:WifiStatusReady -Ne $True
-        $Script:WifiStatusReady = $True
-        If ($ReportedState -Eq "Connected") {
-            $HoldConnecting = ($FirstRefresh -Eq $False) -And ($PreviousState -Ne "Connected") -And ($Script:ConnectedArmed -Ne $True)
-            If ($HoldConnecting -Eq $True) {
-                $Script:ConnectedArmed = $True
-                $Script:LinkState = "Connecting"
-            }
-            Else {
-                $Script:ConnectedArmed = $False
-                $Script:LinkState = "Connected"
-            }
+        If (($ReportedState -Eq "Connected") -And ((Test-WifiSignInReady) -Eq $False)) {
+            $ReportedState = "Connecting"
         }
-        Else {
-            $Script:ConnectedArmed = $False
-            $Script:LinkState = $ReportedState
-        }
+        $Script:LinkState = $ReportedState
 
         If ($Script:LinkState -Ne $Script:LastLoggedLinkState) {
             Write-SignInLog ("[INFO] Wi-Fi state is " + $Script:LinkState + ". " + [String]$Snapshot.Detail)
