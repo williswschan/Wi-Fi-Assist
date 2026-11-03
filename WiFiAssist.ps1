@@ -2280,15 +2280,12 @@ $WindowXaml = @'
                                 CornerRadius="10"
                                 Padding="14,12">
                             <Grid VerticalAlignment="Center">
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                </Grid.RowDefinitions>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
-                                <StackPanel Grid.Row="0" VerticalAlignment="Center">
+                                <StackPanel VerticalAlignment="Center">
                                     <TextBlock x:Name="StatusText"
                                                Text="Checking Wi-Fi..."
                                                FontSize="15"
@@ -2304,11 +2301,10 @@ $WindowXaml = @'
                                                AutomationProperties.AutomationId="NetworkText" />
                                 </StackPanel>
                                 <StackPanel x:Name="SignalRow"
-                                            Grid.Row="1"
-                                            Grid.ColumnSpan="2"
+                                            Grid.Column="1"
                                             Orientation="Horizontal"
-                                            Margin="0,10,0,0"
-                                            HorizontalAlignment="Center"
+                                            Margin="12,0,0,0"
+                                            VerticalAlignment="Center"
                                             Visibility="Collapsed"
                                             AutomationProperties.AutomationId="SignalRow"
                                             AutomationProperties.Name="Signal quality">
@@ -2338,7 +2334,7 @@ $WindowXaml = @'
                                                AutomationProperties.AutomationId="SignalText" />
                                 </StackPanel>
                                 <Button x:Name="ChangeNetworkButton"
-                                        Grid.Column="1"
+                                        Grid.Column="2"
                                         Margin="10,0,0,0"
                                         Style="{StaticResource SecondaryButtonStyle}"
                                         VerticalAlignment="Center"
