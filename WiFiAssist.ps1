@@ -85,22 +85,30 @@ Add-Type -AssemblyName WindowsBase
 $WifiMonitorSource = @'
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 
 public sealed class WifiSnapshot
 {
-    public WifiSnapshot(string state, string detail)
+    public WifiSnapshot(string state, string detail) : this(state, detail, -1)
+    {
+    }
+
+    public WifiSnapshot(string state, string detail, int signalQuality)
     {
         State = state;
         Detail = detail;
+        SignalQuality = signalQuality;
     }
 
     public string State { get; private set; }
     public string Detail { get; private set; }
+    public int SignalQuality { get; private set; }
 }
 
 public static class WifiMonitor
@@ -114,6 +122,11 @@ public static class WifiMonitor
     private const int ProfileNameOffset = 8;
     private const int InterfaceStateOffset = 528;
     private const int InterfaceStride = 532;
+    private const int RssiOpcode = 0x10000102;
+    private const int CurrentConnectionOpcode = 7;
+    private const int SignalQualityOffset = 576;
+    private static int RememberedSignal = -1;
+    private static DateTime RememberedSignalAt = DateTime.MinValue;
 
     public static WifiSnapshot Query()
     {
@@ -123,7 +136,7 @@ public static class WifiMonitor
         }
         catch (Exception)
         {
-            return new WifiSnapshot("Unavailable", "Could not read Wi-Fi status.");
+            return WithoutSignal("Unavailable", "Could not read Wi-Fi status.");
         }
     }
 
@@ -134,7 +147,7 @@ public static class WifiMonitor
         int openResult = NativeMethods.WlanOpenHandle(ClientVersion, IntPtr.Zero, out negotiatedVersion, out handle);
         if (openResult != ErrorSuccess)
         {
-            return new WifiSnapshot("Unavailable", DescribeApiError(openResult));
+            return WithoutSignal("Unavailable", DescribeApiError(openResult));
         }
 
         try
@@ -143,12 +156,12 @@ public static class WifiMonitor
             int enumResult = NativeMethods.WlanEnumInterfaces(handle, IntPtr.Zero, out listPointer);
             if (enumResult != ErrorSuccess)
             {
-                return new WifiSnapshot("Unavailable", DescribeApiError(enumResult));
+                return WithoutSignal("Unavailable", DescribeApiError(enumResult));
             }
 
             if (listPointer == IntPtr.Zero)
             {
-                return new WifiSnapshot("NoAdapter", "A wireless adapter was not found.");
+                return WithoutSignal("NoAdapter", "A wireless adapter was not found.");
             }
 
             try
@@ -156,7 +169,7 @@ public static class WifiMonitor
                 int count = Marshal.ReadInt32(listPointer);
                 if (count <= 0)
                 {
-                    return new WifiSnapshot("NoAdapter", "A wireless adapter was not found.");
+                    return WithoutSignal("NoAdapter", "A wireless adapter was not found.");
                 }
 
                 List<string> connectedNames = new List<string>();
@@ -207,26 +220,27 @@ public static class WifiMonitor
                     {
                         if (names.StartsWith("Network: "))
                         {
-                            return new WifiSnapshot("Connecting", names);
+                            return WithoutSignal("Connecting", names);
                         }
 
-                        return new WifiSnapshot("Connecting", "Waiting for an address from the network.");
+                        return WithoutSignal("Connecting", "Waiting for an address from the network.");
                     }
 
-                    return new WifiSnapshot("Connected", names);
+                    int quality = QueryConnectedSignal(handle, connectedInterfaces);
+                    return new WifiSnapshot("Connected", names, quality);
                 }
 
                 if (anyConnecting)
                 {
-                    return new WifiSnapshot("Connecting", "Connecting to the Wi-Fi network.");
+                    return WithoutSignal("Connecting", "Connecting to the Wi-Fi network.");
                 }
 
                 if (radioStateKnown && anyRadioOff && !anyRadioOn)
                 {
-                    return new WifiSnapshot("RadioOff", "The Wi-Fi radio is turned off.");
+                    return WithoutSignal("RadioOff", "The Wi-Fi radio is turned off.");
                 }
 
-                return new WifiSnapshot("Disconnected", "No Wi-Fi network is associated.");
+                return WithoutSignal("Disconnected", "No Wi-Fi network is associated.");
             }
             finally
             {
@@ -519,6 +533,317 @@ public static class WifiMonitor
         }
 
         return name.Trim();
+    }
+
+    private static WifiSnapshot WithoutSignal(string state, string detail)
+    {
+        RememberedSignal = -1;
+        RememberedSignalAt = DateTime.MinValue;
+        return new WifiSnapshot(state, detail);
+    }
+
+    private static int QueryConnectedSignal(IntPtr handle, List<Guid> interfaceGuids)
+    {
+        for (int index = 0; index < interfaceGuids.Count; index++)
+        {
+            int quality = QueryRssiQuality(handle, interfaceGuids[index]);
+            if (quality < 0)
+            {
+                quality = QueryConnectionQuality(handle, interfaceGuids[index]);
+            }
+
+            if (quality >= 0)
+            {
+                return RememberSignal(quality);
+            }
+        }
+
+        return RememberSignal(QueryNetshQuality());
+    }
+
+    private static int RememberSignal(int quality)
+    {
+        if (quality >= 0 && quality <= 100)
+        {
+            RememberedSignal = quality;
+            RememberedSignalAt = DateTime.UtcNow;
+            return quality;
+        }
+
+        if (RememberedSignal >= 0 && (DateTime.UtcNow - RememberedSignalAt).TotalSeconds < 6)
+        {
+            return RememberedSignal;
+        }
+
+        return -1;
+    }
+
+    private static int QueryRssiQuality(IntPtr handle, Guid interfaceGuid)
+    {
+        Guid guid = interfaceGuid;
+        uint dataSize;
+        IntPtr data;
+        int result = NativeMethods.WlanQueryInterface(
+            handle,
+            ref guid,
+            RssiOpcode,
+            IntPtr.Zero,
+            out dataSize,
+            out data,
+            IntPtr.Zero);
+
+        if (result != ErrorSuccess || data == IntPtr.Zero || dataSize < 4)
+        {
+            if (data != IntPtr.Zero)
+            {
+                NativeMethods.WlanFreeMemory(data);
+            }
+
+            return -1;
+        }
+
+        try
+        {
+            return QualityFromRssi(Marshal.ReadInt32(data));
+        }
+        finally
+        {
+            NativeMethods.WlanFreeMemory(data);
+        }
+    }
+
+    private static int QueryConnectionQuality(IntPtr handle, Guid interfaceGuid)
+    {
+        Guid guid = interfaceGuid;
+        uint dataSize;
+        IntPtr data;
+        int result = NativeMethods.WlanQueryInterface(
+            handle,
+            ref guid,
+            CurrentConnectionOpcode,
+            IntPtr.Zero,
+            out dataSize,
+            out data,
+            IntPtr.Zero);
+
+        if (result != ErrorSuccess || data == IntPtr.Zero)
+        {
+            if (data != IntPtr.Zero)
+            {
+                NativeMethods.WlanFreeMemory(data);
+            }
+
+            return -1;
+        }
+
+        try
+        {
+            if (dataSize < SignalQualityOffset + 4)
+            {
+                return -1;
+            }
+
+            int quality = Marshal.ReadInt32(data, SignalQualityOffset);
+            int ssidLength = Marshal.ReadInt32(data, SsidLengthOffset);
+            if (quality < 0 || quality > 100)
+            {
+                return -1;
+            }
+
+            if (quality == 0 && ssidLength <= 0)
+            {
+                return -1;
+            }
+
+            return quality;
+        }
+        finally
+        {
+            NativeMethods.WlanFreeMemory(data);
+        }
+    }
+
+    private static int QualityFromRssi(int rssi)
+    {
+        if (rssi > -10 || rssi < -120)
+        {
+            return -1;
+        }
+
+        if (rssi <= -100)
+        {
+            return 0;
+        }
+
+        if (rssi >= -50)
+        {
+            return 100;
+        }
+
+        return 2 * (rssi + 100);
+    }
+
+    private static int QueryNetshQuality()
+    {
+        try
+        {
+            string netshPath = System.IO.Path.Combine(Environment.SystemDirectory, "netsh.exe");
+            ProcessStartInfo start = new ProcessStartInfo();
+            start.FileName = netshPath;
+            start.Arguments = "wlan show interfaces";
+            start.UseShellExecute = false;
+            start.CreateNoWindow = true;
+            start.RedirectStandardOutput = true;
+            start.StandardOutputEncoding = Encoding.UTF8;
+            using (Process process = Process.Start(start))
+            {
+                if (process == null)
+                {
+                    return -1;
+                }
+
+                if (!process.WaitForExit(1500))
+                {
+                    try
+                    {
+                        process.Kill();
+                    }
+                    catch (Exception)
+                    {
+                    }
+
+                    return -1;
+                }
+
+                return ParseNetshSignal(process.StandardOutput.ReadToEnd());
+            }
+        }
+        catch (Exception)
+        {
+            return -1;
+        }
+    }
+
+    private static int ParseNetshSignal(string output)
+    {
+        if (string.IsNullOrEmpty(output))
+        {
+            return -1;
+        }
+
+        string[] lines = output.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+        bool connected = false;
+        int labeled = -1;
+        int unlabeled = -1;
+        int unlabeledCount = 0;
+        int chosen = -1;
+        for (int index = 0; index < lines.Length; index++)
+        {
+            string line = lines[index].Trim();
+            if (StartsWithKey(line, "Name"))
+            {
+                chosen = ChooseSignal(connected, labeled, unlabeled, unlabeledCount);
+                if (chosen >= 0)
+                {
+                    return chosen;
+                }
+
+                connected = false;
+                labeled = -1;
+                unlabeled = -1;
+                unlabeledCount = 0;
+                continue;
+            }
+
+            if (StartsWithKey(line, "State"))
+            {
+                string value = ValueAfterColon(line);
+                connected = string.Equals(value, "connected", StringComparison.OrdinalIgnoreCase);
+                continue;
+            }
+
+            if (!connected)
+            {
+                continue;
+            }
+
+            Match match = Regex.Match(line, @"(\d{1,3})\s*%");
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            int percent;
+            if (!int.TryParse(match.Groups[1].Value, out percent) || percent < 0 || percent > 100)
+            {
+                continue;
+            }
+
+            if (StartsWithKey(line, "Signal"))
+            {
+                labeled = percent;
+            }
+
+            unlabeled = percent;
+            unlabeledCount++;
+        }
+
+        return ChooseSignal(connected, labeled, unlabeled, unlabeledCount);
+    }
+
+    private static int ChooseSignal(bool connected, int labeled, int unlabeled, int unlabeledCount)
+    {
+        if (!connected)
+        {
+            return -1;
+        }
+
+        if (labeled >= 0)
+        {
+            return labeled;
+        }
+
+        if (unlabeledCount == 1)
+        {
+            return unlabeled;
+        }
+
+        return -1;
+    }
+
+    private static bool StartsWithKey(string line, string key)
+    {
+        if (!line.StartsWith(key, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        int colon = line.IndexOf(':');
+        if (colon < key.Length)
+        {
+            return false;
+        }
+
+        for (int index = key.Length; index < colon; index++)
+        {
+            if (line[index] != ' ' && line[index] != '\t')
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static string ValueAfterColon(string line)
+    {
+        int colon = line.IndexOf(':');
+        if (colon < 0 || colon + 1 >= line.Length)
+        {
+            return "";
+        }
+
+        return line.Substring(colon + 1).Trim();
     }
 
     private static string DescribeApiError(int errorCode)
@@ -888,6 +1213,7 @@ $Script:SignInReadyAt = $Null
 $Script:SignInDelayTimer = $Null
 $Script:SsidWarningShown = $False
 $Script:AgentWasRunning = $Null
+$Script:LastLoggedSignal = ""
 
 Function New-FrozenBrush {
     Param(
@@ -1075,6 +1401,49 @@ Function Test-WifiSignInReady {
     }
 }
 
+Function Set-SignalIndicator {
+    Param(
+        [Int]$Quality
+    )
+
+    If ($Null -Eq $Script:SignalRow) {
+        Return
+    }
+
+    If (($Script:LinkState -Ne "Connected") -Or ($Quality -Lt 0) -Or ($Quality -Gt 100)) {
+        $Script:SignalRow.Visibility = [System.Windows.Visibility]::Collapsed
+        Return
+    }
+
+    $Level = [Int][Math]::Ceiling($Quality / 10.0)
+    If ($Level -Gt 10) {
+        $Level = 10
+    }
+    If ($Level -Lt 0) {
+        $Level = 0
+    }
+
+    $FilledBrush = $Script:ConnectedBrush
+    If ($Level -Le 3) {
+        $FilledBrush = $Script:WarningBrush
+    }
+
+    For ($Index = 0; $Index -Lt 10; $Index++) {
+        $Bar = $Script:SignalBars[$Index]
+        If (($Index + 1) -Le $Level) {
+            $Bar.Background = $FilledBrush
+        }
+        Else {
+            $Bar.Background = $Script:SignalEmptyBrush
+        }
+    }
+
+    $Script:SignalText.Text = ([String]$Level) + " / 10"
+    $Script:SignalRow.ToolTip = "Signal strength " + ([String]$Level) + " of 10"
+    [System.Windows.Automation.AutomationProperties]::SetName($Script:SignalRow, $Script:SignalRow.ToolTip)
+    $Script:SignalRow.Visibility = [System.Windows.Visibility]::Visible
+}
+
 Function Update-WifiStatus {
     Try {
         $Snapshot = [WifiMonitor]::Query()
@@ -1131,6 +1500,24 @@ Function Update-WifiStatus {
             $Script:NetworkText.Text = $NetworkLabel
         }
     }
+
+        $SignalQuality = -1
+        Try {
+            $SignalQuality = [Int]$Snapshot.SignalQuality
+        }
+        Catch {
+            $SignalQuality = -1
+        }
+        If (($Script:LinkState -Eq "Connected") -And ([String]$SignalQuality -Ne $Script:LastLoggedSignal)) {
+            If ($SignalQuality -Lt 0) {
+                Write-SignInLog "[WARN] Wi-Fi signal strength could not be read."
+            }
+            Else {
+                Write-SignInLog ("[INFO] Wi-Fi signal quality is " + [String]$SignalQuality + ".")
+            }
+            $Script:LastLoggedSignal = [String]$SignalQuality
+        }
+        Set-SignalIndicator -Quality $SignalQuality
 
         Update-SignInButtonState
     }
@@ -1516,6 +1903,7 @@ $Script:InactiveStepBrush = New-FrozenBrush -Red 0xE1 -Green 0xE5 -Blue 0xEA
 $Script:InactiveCardBrush = New-FrozenBrush -Red 0xF7 -Green 0xF8 -Blue 0xFA
 $Script:InactiveTitleBrush = New-FrozenBrush -Red 0x9A -Green 0xA3 -Blue 0xAF
 $Script:SuccessTextBrush = New-FrozenBrush -Red 0x1F -Green 0x6B -Blue 0x3A
+$Script:SignalEmptyBrush = New-FrozenBrush -Red 0xD5 -Green 0xDB -Blue 0xE3
 $Script:WarningTextBrush = New-FrozenBrush -Red 0x8A -Green 0x4B -Blue 0x08
 $Script:ErrorTextBrush = New-FrozenBrush -Red 0xA1 -Green 0x26 -Blue 0x22
 
@@ -1783,6 +2171,31 @@ $WindowXaml = @'
                                                Foreground="#5E6874"
                                                TextWrapping="Wrap"
                                                AutomationProperties.AutomationId="NetworkText" />
+                                    <StackPanel x:Name="SignalRow"
+                                                Orientation="Horizontal"
+                                                Margin="0,7,0,0"
+                                                Visibility="Collapsed"
+                                                AutomationProperties.AutomationId="SignalRow"
+                                                AutomationProperties.Name="Signal strength">
+                                        <StackPanel Orientation="Horizontal" Height="16" VerticalAlignment="Center">
+                                            <Border x:Name="SignalBar1" Width="4" Height="3" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
+                                            <Border x:Name="SignalBar2" Width="4" Height="4" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
+                                            <Border x:Name="SignalBar3" Width="4" Height="6" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
+                                            <Border x:Name="SignalBar4" Width="4" Height="7" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
+                                            <Border x:Name="SignalBar5" Width="4" Height="8" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
+                                            <Border x:Name="SignalBar6" Width="4" Height="10" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
+                                            <Border x:Name="SignalBar7" Width="4" Height="11" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
+                                            <Border x:Name="SignalBar8" Width="4" Height="13" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
+                                            <Border x:Name="SignalBar9" Width="4" Height="14" Margin="0,0,2,0" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
+                                            <Border x:Name="SignalBar10" Width="4" Height="16" CornerRadius="1" Background="#D5DBE3" VerticalAlignment="Bottom" />
+                                        </StackPanel>
+                                        <TextBlock x:Name="SignalText"
+                                                   Margin="8,0,0,0"
+                                                   FontSize="12"
+                                                   Foreground="#5E6874"
+                                                   VerticalAlignment="Center"
+                                                   AutomationProperties.AutomationId="SignalText" />
+                                    </StackPanel>
                                 </StackPanel>
                                 <Button x:Name="ChangeNetworkButton"
                                         Grid.Column="1"
@@ -1864,6 +2277,12 @@ $Script:Window = [System.Windows.Markup.XamlReader]::Parse($WindowXaml)
 $Script:StatusCard = $Script:Window.FindName("StatusCard")
 $Script:StatusText = $Script:Window.FindName("StatusText")
 $Script:NetworkText = $Script:Window.FindName("NetworkText")
+$Script:SignalRow = $Script:Window.FindName("SignalRow")
+$Script:SignalText = $Script:Window.FindName("SignalText")
+$Script:SignalBars = New-Object System.Windows.Controls.Border[] 10
+For ($BarIndex = 0; $BarIndex -Lt 10; $BarIndex++) {
+    $Script:SignalBars[$BarIndex] = $Script:Window.FindName("SignalBar" + [String]($BarIndex + 1))
+}
 $Script:OpenSignInButton = $Script:Window.FindName("OpenSignInButton")
 $Script:ResultText = $Script:Window.FindName("ResultText")
 $Script:Step1Badge = $Script:Window.FindName("Step1Badge")
@@ -1883,7 +2302,13 @@ $Script:CloseButton = $Script:Window.FindName("CloseButton")
 $Script:WindowSurface = $Script:Window.FindName("WindowSurface")
 $Script:TitleBar = $Script:Window.FindName("TitleBar")
 
-If (($Null -Eq $Script:StatusCard) -Or ($Null -Eq $Script:StatusText) -Or ($Null -Eq $Script:NetworkText) -Or ($Null -Eq $Script:OpenSignInButton) -Or ($Null -Eq $Script:ResultText) -Or ($Null -Eq $Script:Step1Badge) -Or ($Null -Eq $Script:Step1Mark) -Or ($Null -Eq $Script:Step1Title) -Or ($Null -Eq $Script:Step1Detail) -Or ($Null -Eq $Script:Step2Badge) -Or ($Null -Eq $Script:Step2Mark) -Or ($Null -Eq $Script:Step3Badge) -Or ($Null -Eq $Script:Step3Mark) -Or ($Null -Eq $Script:ChangeNetworkButton) -Or ($Null -Eq $Script:ChangeNetworkLabel) -Or ($Null -Eq $Script:HelpTitle) -Or ($Null -Eq $Script:HelpBody) -Or ($Null -Eq $Script:MinimizeButton) -Or ($Null -Eq $Script:CloseButton) -Or ($Null -Eq $Script:WindowSurface) -Or ($Null -Eq $Script:TitleBar)) {
+$SignalBarsMissing = $False
+ForEach ($SignalBar in $Script:SignalBars) {
+    If ($Null -Eq $SignalBar) {
+        $SignalBarsMissing = $True
+    }
+}
+If (($Null -Eq $Script:StatusCard) -Or ($Null -Eq $Script:StatusText) -Or ($Null -Eq $Script:NetworkText) -Or ($Null -Eq $Script:SignalRow) -Or ($Null -Eq $Script:SignalText) -Or ($SignalBarsMissing -Eq $True) -Or ($Null -Eq $Script:OpenSignInButton) -Or ($Null -Eq $Script:ResultText) -Or ($Null -Eq $Script:Step1Badge) -Or ($Null -Eq $Script:Step1Mark) -Or ($Null -Eq $Script:Step1Title) -Or ($Null -Eq $Script:Step1Detail) -Or ($Null -Eq $Script:Step2Badge) -Or ($Null -Eq $Script:Step2Mark) -Or ($Null -Eq $Script:Step3Badge) -Or ($Null -Eq $Script:Step3Mark) -Or ($Null -Eq $Script:ChangeNetworkButton) -Or ($Null -Eq $Script:ChangeNetworkLabel) -Or ($Null -Eq $Script:HelpTitle) -Or ($Null -Eq $Script:HelpBody) -Or ($Null -Eq $Script:MinimizeButton) -Or ($Null -Eq $Script:CloseButton) -Or ($Null -Eq $Script:WindowSurface) -Or ($Null -Eq $Script:TitleBar)) {
     Write-SignInLog "[ERROR] The sign-in window could not be loaded."
     Write-Error "[ERROR] The sign-in window could not be loaded."
     Exit 1
