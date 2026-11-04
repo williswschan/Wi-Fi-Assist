@@ -1363,7 +1363,7 @@ Function Update-AgentStep {
     }
     Else {
         Set-StepBadge -Badge $Script:Step1Badge -Mark $Script:Step1Mark -Title $Script:Step1Title -BadgeBrush $Script:OfflineBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
-        $Script:Step1Title.Text = "Client not running"
+        $Script:Step1Title.Text = "Not ready to connect"
         If ((Test-Path -LiteralPath $Script:SecureClientPath) -Eq $False) {
             $Script:Step1Detail.Text = "Cisco Secure Client was not found."
         }
@@ -1371,7 +1371,7 @@ Function Update-AgentStep {
             $Script:Step1Detail.Text = "Cisco Secure Client could not be started."
         }
         Else {
-            $Script:Step1Detail.Text = "Agent is not running."
+            $Script:Step1Detail.Text = "Cisco Secure Client is not running."
         }
         $Script:StartClientButton.Visibility = [System.Windows.Visibility]::Visible
         Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:StatusText -BadgeBrush $Script:InactiveStepBrush -MarkBrush $Script:InactiveTitleBrush -TitleBrush $Script:InactiveTitleBrush
@@ -2249,8 +2249,8 @@ $WindowXaml = @'
                                 <TextBlock x:Name="Step1Mark" Text="1" Foreground="White" FontWeight="Bold" FontSize="13" HorizontalAlignment="Center" VerticalAlignment="Center" />
                             </Border>
                             <StackPanel Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center">
-                                <TextBlock x:Name="Step1Title" Text="Client not running" FontSize="13" FontWeight="SemiBold" Foreground="#1A2332" TextWrapping="Wrap" />
-                                <TextBlock x:Name="Step1Detail" Text="Agent is not running." Margin="0,1,0,0" FontSize="11" Foreground="#8B95A1" TextWrapping="Wrap" AutomationProperties.AutomationId="Step1Detail" />
+                                <TextBlock x:Name="Step1Title" Text="Not ready to connect" FontSize="13" FontWeight="SemiBold" Foreground="#1A2332" TextWrapping="Wrap" />
+                                <TextBlock x:Name="Step1Detail" Text="Cisco Secure Client is not running." Margin="0,1,0,0" FontSize="11" Foreground="#8B95A1" TextWrapping="Wrap" AutomationProperties.AutomationId="Step1Detail" />
                             </StackPanel>
                             <Button x:Name="StartClientButton"
                                     Grid.Column="2"
