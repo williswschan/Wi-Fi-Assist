@@ -1567,6 +1567,25 @@ Function Set-HelpRuns {
     [System.Windows.Automation.AutomationProperties]::SetName($Script:HelpBody, $Plain)
 }
 
+Function Add-WeakSignalParts {
+    Param(
+        [Object[]]$Parts
+    )
+
+    $Combined = @($Parts)
+    $WeakSignal = ($Script:SignalLabel -Eq "Low") -Or ($Script:SignalLabel -Eq "Poor")
+    If (($Script:LinkState -Ne "Connected") -Or ($WeakSignal -Eq $False)) {
+        Return $Combined
+    }
+
+    Return $Combined + @(
+        @{ Break = $True },
+        @{ Text = "Try moving to a better location or select " },
+        @{ Text = "Change Network"; Bold = $True },
+        @{ Text = " for a stronger connection." }
+    )
+}
+
 Function Update-HelpMessage {
     If ($Null -Eq $Script:HelpBody) {
         Return
@@ -1594,33 +1613,23 @@ Function Update-HelpMessage {
     }
 
     If (($Script:LinkState -Eq "Connected") -And ($Script:WifiConnectivityLevel -Eq 3) -And ($Null -Eq $Script:SignInReadyAt) -And ((Test-AcwebHelperRunning) -Eq $False)) {
-        Set-HelpRuns -Title "Need help?" -Parts @(
-            @{ Text = "No sign-in page is required on this network. You can continue with the VPN connection." }
-        )
-        Return
-    }
-
-    $WeakSignal = ($Script:SignalLabel -Eq "Low") -Or ($Script:SignalLabel -Eq "Poor")
-    If (($Script:LinkState -Eq "Connected") -And ($WeakSignal -Eq $True)) {
-        Set-HelpRuns -Title "Need help?" -Parts @(
-            @{ Text = "Try moving to a better location or select " },
-            @{ Text = "Change Network"; Bold = $True },
-            @{ Text = " for a stronger connection." }
-        )
+        Set-HelpRuns -Title "Need help?" -Parts (Add-WeakSignalParts -Parts @(
+            @{ Text = "No sign-in page is required on this network." }
+        ))
         Return
     }
 
     If ($Script:LinkState -Eq "Connected") {
         If (($Script:WifiConnectivityLevel -Eq 1) -And ($Null -Eq $Script:SignInReadyAt) -And ((Test-AcwebHelperRunning) -Eq $False)) {
-            Set-HelpRuns -Title "Need help?" -Parts @(
+            Set-HelpRuns -Title "Need help?" -Parts (Add-WeakSignalParts -Parts @(
                 @{ Text = "Windows is still checking whether this network requires a sign-in page." }
-            )
+            ))
             Return
         }
 
-        Set-HelpRuns -Title "Please wait" -Parts @(
+        Set-HelpRuns -Title "Please wait" -Parts (Add-WeakSignalParts -Parts @(
             @{ Text = "The sign-in button will be available shortly." }
-        )
+        ))
         Return
     }
 
