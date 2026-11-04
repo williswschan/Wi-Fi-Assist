@@ -1215,6 +1215,9 @@ $Script:SsidWarningShown = $False
 $Script:AgentWasRunning = $Null
 $Script:LastLoggedSignal = ""
 $Script:SignInWaitFlashing = $False
+$Script:SignalLabel = ""
+$Script:HelpBaseTitle = "Need help?"
+$Script:HelpBaseBody = "Turn on Wi-Fi and connect to a network (e.g. airline, hotel, café), then return here."
 $Script:SecureClientPath = "C:\Program Files (x86)\Cisco\Cisco Secure Client\UI\csc_ui.exe"
 $Script:SecureClientStartFailed = $False
 
@@ -1621,7 +1624,7 @@ Function Start-SignInEnableDelay {
     }
 
     $Script:SignInDelayTimer = New-Object System.Windows.Threading.DispatcherTimer
-    $Script:SignInDelayTimer.Interval = [TimeSpan]::FromSeconds(5)
+    $Script:SignInDelayTimer.Interval = [TimeSpan]::FromSeconds(7)
     $Script:SignInDelayTimer.Add_Tick({
         Stop-SignInEnableDelay
         Update-SignInButtonState
@@ -1648,9 +1651,9 @@ Function Update-SignInButtonState {
         If ($Null -Eq $Script:SignInReadyAt) {
             $Script:SignInReadyAt = Get-Date
             Start-SignInEnableDelay
-            Write-SignInLog "[INFO] acwebhelper.exe is running. Sign-in button enables in 5 seconds."
+            Write-SignInLog "[INFO] acwebhelper.exe is running. Sign-in button enables in 7 seconds."
         }
-        ElseIf (((Get-Date) - $Script:SignInReadyAt).TotalSeconds -Ge 5) {
+        ElseIf (((Get-Date) - $Script:SignInReadyAt).TotalSeconds -Ge 7) {
             $Script:SignInUnlocked = $True
             Stop-SignInEnableDelay
             Write-SignInLog "[INFO] Sign-in button enabled."
