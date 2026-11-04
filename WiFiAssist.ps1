@@ -1466,22 +1466,22 @@ Function Set-SignalIndicator {
     }
 
     $Label = "Poor"
-    $DotBrush = $Script:OfflineBrush
+    $DotBrush = $Script:SignalPoorBrush
     If ($Level -Ge 9) {
         $Label = "Excellent"
-        $DotBrush = $Script:ConnectedBrush
+        $DotBrush = $Script:SignalGoodBrush
     }
     ElseIf ($Level -Ge 7) {
         $Label = "Good"
-        $DotBrush = $Script:ConnectedBrush
+        $DotBrush = $Script:SignalGoodBrush
     }
     ElseIf ($Level -Ge 5) {
         $Label = "Fair"
-        $DotBrush = $Script:WarningBrush
+        $DotBrush = $Script:SignalFairBrush
     }
     ElseIf ($Level -Ge 3) {
         $Label = "Low"
-        $DotBrush = $Script:WarningBrush
+        $DotBrush = $Script:SignalFairBrush
     }
 
     $Script:SignalDot.Background = $DotBrush
@@ -2029,6 +2029,9 @@ $Script:InactiveCardBrush = New-FrozenBrush -Red 0xF7 -Green 0xF8 -Blue 0xFA
 $Script:InactiveTitleBrush = New-FrozenBrush -Red 0x9A -Green 0xA3 -Blue 0xAF
 $Script:SuccessTextBrush = New-FrozenBrush -Red 0x1F -Green 0x6B -Blue 0x3A
 $Script:SignalEmptyBrush = New-FrozenBrush -Red 0xD5 -Green 0xDB -Blue 0xE3
+$Script:SignalGoodBrush = New-FrozenBrush -Red 0x2E -Green 0xAE -Blue 0x4E
+$Script:SignalFairBrush = New-FrozenBrush -Red 0xE0 -Green 0xA1 -Blue 0x06
+$Script:SignalPoorBrush = New-FrozenBrush -Red 0xE0 -Green 0x4B -Blue 0x4B
 $Script:WarningTextBrush = New-FrozenBrush -Red 0x8A -Green 0x4B -Blue 0x08
 $Script:ErrorTextBrush = New-FrozenBrush -Red 0xA1 -Green 0x26 -Blue 0x22
 
@@ -2315,11 +2318,11 @@ $WindowXaml = @'
                                             Visibility="Collapsed"
                                             AutomationProperties.AutomationId="SignalRow"
                                             AutomationProperties.Name="Signal quality">
-                                    <Border x:Name="SignalDot" Width="8" Height="8" CornerRadius="4" Background="#1F8A4C" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                    <Border x:Name="SignalDot" Width="7" Height="7" CornerRadius="4" Background="#2EAE4E" VerticalAlignment="Center" Margin="0,1,7,0" />
                                     <TextBlock x:Name="SignalText"
-                                               FontSize="12"
-                                               FontWeight="SemiBold"
-                                               Foreground="#1F8A4C"
+                                               FontSize="13"
+                                               FontWeight="Normal"
+                                               Foreground="#2EAE4E"
                                                VerticalAlignment="Center"
                                                AutomationProperties.AutomationId="SignalText" />
                                 </StackPanel>
