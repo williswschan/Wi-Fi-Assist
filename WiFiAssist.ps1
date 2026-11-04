@@ -2252,7 +2252,7 @@ $WindowXaml = @'
                             </StackPanel>
                             <Button x:Name="StartClientButton"
                                     Grid.Column="2"
-                                    Margin="10,0,0,0"
+                                    Margin="10,0,16,0"
                                     Style="{StaticResource SecondaryButtonStyle}"
                                     VerticalAlignment="Center"
                                     AutomationProperties.AutomationId="StartClientButton"
