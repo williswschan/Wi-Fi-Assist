@@ -1356,12 +1356,14 @@ Function Update-AgentStep {
     $WhiteBrush = [System.Windows.Media.Brushes]::White
     If ($AgentRunning -Eq $True) {
         Set-StepBadge -Badge $Script:Step1Badge -Mark $Script:Step1Mark -Title $Script:Step1Title -BadgeBrush $Script:ConnectedBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
-        $Script:Step1Detail.Text = "Agent is running"
+        $Script:Step1Title.Text = "Ready to connect"
+        $Script:Step1Detail.Text = "Cisco Secure Client is running"
         $Script:SecureClientStartFailed = $False
         $Script:StartClientButton.Visibility = [System.Windows.Visibility]::Collapsed
     }
     Else {
         Set-StepBadge -Badge $Script:Step1Badge -Mark $Script:Step1Mark -Title $Script:Step1Title -BadgeBrush $Script:OfflineBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
+        $Script:Step1Title.Text = "Client not running"
         If ((Test-Path -LiteralPath $Script:SecureClientPath) -Eq $False) {
             $Script:Step1Detail.Text = "Cisco Secure Client was not found."
         }
@@ -2247,7 +2249,7 @@ $WindowXaml = @'
                                 <TextBlock x:Name="Step1Mark" Text="1" Foreground="White" FontWeight="Bold" FontSize="13" HorizontalAlignment="Center" VerticalAlignment="Center" />
                             </Border>
                             <StackPanel Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center">
-                                <TextBlock x:Name="Step1Title" Text="Cisco Secure Client" FontSize="13" FontWeight="SemiBold" Foreground="#1A2332" TextWrapping="Wrap" />
+                                <TextBlock x:Name="Step1Title" Text="Client not running" FontSize="13" FontWeight="SemiBold" Foreground="#1A2332" TextWrapping="Wrap" />
                                 <TextBlock x:Name="Step1Detail" Text="Agent is not running." Margin="0,1,0,0" FontSize="11" Foreground="#8B95A1" TextWrapping="Wrap" AutomationProperties.AutomationId="Step1Detail" />
                             </StackPanel>
                             <Button x:Name="StartClientButton"
