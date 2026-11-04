@@ -1216,8 +1216,6 @@ $Script:AgentWasRunning = $Null
 $Script:LastLoggedSignal = ""
 $Script:SignInWaitFlashing = $False
 $Script:SignalLabel = ""
-$Script:HelpBaseTitle = "Need help?"
-$Script:HelpBaseBody = "Turn on Wi-Fi and connect to a network (e.g. airline, hotel, café), then return here."
 $Script:SecureClientPath = "C:\Program Files (x86)\Cisco\Cisco Secure Client\UI\csc_ui.exe"
 $Script:SecureClientStartFailed = $False
 
@@ -1318,21 +1316,18 @@ Function Set-WifiStatusAppearance {
             $Script:Step2Icon.Foreground = $Script:ConnectedBrush
             Set-NetworkButtonLabel -Label "Change`nNetwork"
             Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:StatusText -BadgeBrush $Script:ConnectedBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
-            Set-HelpMessage -Title "Tip" -Body "If the sign-in page does not appear, click the ""Open Wi-Fi Sign-In"" button."
         }
         "Connecting" {
             $Script:StatusText.Foreground = $Script:TitleBrush
             $Script:Step2Icon.Foreground = $Script:WarningBrush
             Set-NetworkButtonLabel -Label "Select`nNetwork"
             Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:StatusText -BadgeBrush $Script:WarningBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
-            Set-HelpMessage -Title "Need help?" -Body "Wait until Wi-Fi status is connected."
         }
         Default {
             $Script:StatusText.Foreground = $Script:TitleBrush
             $Script:Step2Icon.Foreground = $Script:OfflineBrush
             Set-NetworkButtonLabel -Label "Select`nNetwork"
             Set-StepBadge -Badge $Script:Step2Badge -Mark $Script:Step2Mark -Title $Script:StatusText -BadgeBrush $Script:OfflineBrush -MarkBrush $WhiteBrush -TitleBrush $Script:TitleBrush
-            Set-HelpMessage -Title "Need help?" -Body "Turn on Wi-Fi and connect to a network (e.g. airline, hotel, café), then return here."
         }
     }
 
@@ -1389,6 +1384,8 @@ Function Update-AgentStep {
         }
         $Script:AgentWasRunning = $AgentRunning
     }
+
+    Update-HelpMessage
 }
 
 Function Start-SecureClient {
@@ -1496,15 +1493,36 @@ Function Set-SignalIndicator {
     Update-HelpMessage
 }
 
-Function Set-HelpMessage {
+Function Set-HelpRuns {
     Param(
         [String]$Title,
-        [String]$Body
+        [Object[]]$Parts
     )
 
-    $Script:HelpBaseTitle = $Title
-    $Script:HelpBaseBody = $Body
-    Update-HelpMessage
+    If ($Null -Eq $Script:HelpBody) {
+        Return
+    }
+
+    $Script:HelpTitle.Text = $Title
+    $Script:HelpBody.Inlines.Clear()
+    $Plain = ""
+    ForEach ($Part in @($Parts)) {
+        If ($Part.Break -Eq $True) {
+            $Script:HelpBody.Inlines.Add((New-Object System.Windows.Documents.LineBreak)) | Out-Null
+            $Plain = $Plain + "`n"
+            Continue
+        }
+
+        $Run = New-Object System.Windows.Documents.Run
+        $Run.Text = [String]$Part.Text
+        If ($Part.Bold -Eq $True) {
+            $Run.FontWeight = [System.Windows.FontWeights]::Bold
+        }
+        $Script:HelpBody.Inlines.Add($Run) | Out-Null
+        $Plain = $Plain + $Run.Text
+    }
+
+    [System.Windows.Automation.AutomationProperties]::SetName($Script:HelpBody, $Plain)
 }
 
 Function Update-HelpMessage {
@@ -1512,14 +1530,54 @@ Function Update-HelpMessage {
         Return
     }
 
-    $Body = $Script:HelpBaseBody
-    $WeakSignal = ($Script:SignalLabel -Eq "Fair") -Or ($Script:SignalLabel -Eq "Low") -Or ($Script:SignalLabel -Eq "Poor")
-    If (($Script:LinkState -Eq "Connected") -And ($WeakSignal -Eq $True)) {
-        $Body = $Body + " Signal quality is " + $Script:SignalLabel.ToLower() + ". If a stronger Wi-Fi network is available, connect to it for a more reliable connection."
+    If ((Test-CscUiRunning) -Eq $False) {
+        Set-HelpRuns -Title "Need help?" -Parts @(
+            @{ Text = "Select " },
+            @{ Text = "Start Client"; Bold = $True },
+            @{ Text = " to get ready to connect." }
+        )
+        Return
     }
 
-    $Script:HelpTitle.Text = $Script:HelpBaseTitle
-    $Script:HelpBody.Text = $Body
+    $SignInReady = ($Script:LinkState -Eq "Connected") -And ($Script:SignInUnlocked -Eq $True)
+    If ($SignInReady -Eq $True) {
+        Set-HelpRuns -Title "Need help?" -Parts @(
+            @{ Text = "Complete the sign-in if a page appears. Otherwise, select " },
+            @{ Text = "Open Wi-Fi Sign-In"; Bold = $True },
+            @{ Text = "." },
+            @{ Break = $True },
+            @{ Text = "Still no page? Try moving to a better location or reconnecting to Wi-Fi." }
+        )
+        Return
+    }
+
+    $WeakSignal = ($Script:SignalLabel -Eq "Low") -Or ($Script:SignalLabel -Eq "Poor")
+    If (($Script:LinkState -Eq "Connected") -And ($WeakSignal -Eq $True)) {
+        Set-HelpRuns -Title "Need help?" -Parts @(
+            @{ Text = "Try moving to a better location or select " },
+            @{ Text = "Change Network"; Bold = $True },
+            @{ Text = " for a stronger connection." }
+        )
+        Return
+    }
+
+    If ($Script:LinkState -Eq "Connected") {
+        Set-HelpRuns -Title "Please wait" -Parts @(
+            @{ Text = "The sign-in button will be available shortly." }
+        )
+        Return
+    }
+
+    If ($Script:LinkState -Eq "Connecting") {
+        Set-HelpRuns -Title "Need help?" -Parts @(
+            @{ Text = "Wait until Wi-Fi status is connected." }
+        )
+        Return
+    }
+
+    Set-HelpRuns -Title "Need help?" -Parts @(
+        @{ Text = "Turn on Wi-Fi and connect to a network (e.g. airline, hotel, café), then return here." }
+    )
 }
 
 Function Update-WifiStatus {
@@ -1670,6 +1728,7 @@ Function Update-SignInButtonState {
     $Script:OpenSignInButton.IsEnabled = ($SignInReady -Eq $True) -And ($SignInBusy -Eq $False)
     Update-Step3Badge -Ready $SignInReady
     Set-SignInPrompt -Waiting $WaitingForSignIn
+    Update-HelpMessage
 }
 
 Function Set-SignInPrompt {
@@ -1685,7 +1744,6 @@ Function Set-SignInPrompt {
         $Script:SignInButtonLabel.Text = "Please wait"
         $Script:SignInCaption.Text = "Wi-Fi sign-in is being prepared. The authentication page will be available shortly."
         [System.Windows.Automation.AutomationProperties]::SetName($Script:OpenSignInButton, "Please wait")
-        Set-HelpMessage -Title "Please wait" -Body "The sign-in button will be available shortly."
         Start-SignInWaitFlash
         Return
     }
@@ -2172,7 +2230,7 @@ $WindowXaml = @'
             </Setter>
         </Style>
         <Style x:Key="SignInButtonStyle" TargetType="Button">
-            <Setter Property="Background" Value="#CA2420" />
+            <Setter Property="Background" Value="#1F8A4C" />
             <Setter Property="Foreground" Value="White" />
             <Setter Property="FontSize" Value="15" />
             <Setter Property="FontWeight" Value="SemiBold" />
@@ -2192,10 +2250,10 @@ $WindowXaml = @'
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Border" Property="Background" Value="#A81E1B" />
+                                <Setter TargetName="Border" Property="Background" Value="#187A42" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="Border" Property="Background" Value="#8E1916" />
+                                <Setter TargetName="Border" Property="Background" Value="#146636" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter TargetName="Border" Property="Background" Value="#E6E9ED" />
