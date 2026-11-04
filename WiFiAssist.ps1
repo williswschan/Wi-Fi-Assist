@@ -1593,7 +1593,7 @@ Function Update-HelpMessage {
         Return
     }
 
-    If (($Script:LinkState -Eq "Connected") -And ($Script:WifiConnectivityLevel -Eq 3)) {
+    If (($Script:LinkState -Eq "Connected") -And ($Script:WifiConnectivityLevel -Eq 3) -And ($Null -Eq $Script:SignInReadyAt) -And ((Test-AcwebHelperRunning) -Eq $False)) {
         Set-HelpRuns -Title "Need help?" -Parts @(
             @{ Text = "No sign-in page is required on this network. You can continue with the VPN connection." }
         )
@@ -1611,7 +1611,7 @@ Function Update-HelpMessage {
     }
 
     If ($Script:LinkState -Eq "Connected") {
-        If ($Script:WifiConnectivityLevel -Eq 1) {
+        If (($Script:WifiConnectivityLevel -Eq 1) -And ($Null -Eq $Script:SignInReadyAt) -And ((Test-AcwebHelperRunning) -Eq $False)) {
             Set-HelpRuns -Title "Need help?" -Parts @(
                 @{ Text = "Windows is still checking whether this network requires a sign-in page." }
             )
@@ -1754,8 +1754,6 @@ Function Update-SignInButtonState {
 
     $WifiConnected = $Script:LinkState -Eq "Connected"
     $HelperRunning = Test-AcwebHelperRunning
-    $CaptivePortal = $Script:WifiConnectivityLevel -Eq 2
-    $PortalUnknown = $Script:WifiConnectivityLevel -Lt 0
     If ($WifiConnected -Eq $False) {
         $Script:SignInUnlocked = $False
         $Script:SignInReadyAt = $Null
@@ -1764,22 +1762,16 @@ Function Update-SignInButtonState {
     ElseIf ($Script:SignInUnlocked -Eq $True) {
         Stop-SignInEnableDelay
     }
-    ElseIf (($CaptivePortal -Eq $True) -Or ($PortalUnknown -Eq $True)) {
-        If ($HelperRunning -Eq $True) {
-            If ($Null -Eq $Script:SignInReadyAt) {
-                $Script:SignInReadyAt = Get-Date
-                Start-SignInEnableDelay
-                Write-SignInLog "[INFO] acwebhelper.exe is running. Sign-in button enables in 7 seconds."
-            }
-            ElseIf (((Get-Date) - $Script:SignInReadyAt).TotalSeconds -Ge 7) {
-                $Script:SignInUnlocked = $True
-                Stop-SignInEnableDelay
-                Write-SignInLog "[INFO] Sign-in button enabled."
-            }
+    ElseIf ($HelperRunning -Eq $True) {
+        If ($Null -Eq $Script:SignInReadyAt) {
+            $Script:SignInReadyAt = Get-Date
+            Start-SignInEnableDelay
+            Write-SignInLog "[INFO] acwebhelper.exe is running. Sign-in button enables in 7 seconds."
         }
-        Else {
-            $Script:SignInReadyAt = $Null
+        ElseIf (((Get-Date) - $Script:SignInReadyAt).TotalSeconds -Ge 7) {
+            $Script:SignInUnlocked = $True
             Stop-SignInEnableDelay
+            Write-SignInLog "[INFO] Sign-in button enabled."
         }
     }
     Else {
@@ -1789,7 +1781,8 @@ Function Update-SignInButtonState {
 
     $SignInBusy = $Script:IsOpening -Eq $True
     $SignInReady = ($WifiConnected -Eq $True) -And ($Script:SignInUnlocked -Eq $True)
-    $WaitingForSignIn = ($WifiConnected -Eq $True) -And ($Script:SignInUnlocked -Eq $False) -And (($CaptivePortal -Eq $True) -Or ($PortalUnknown -Eq $True))
+    $QuietNetwork = (($Script:WifiConnectivityLevel -Eq 3) -Or ($Script:WifiConnectivityLevel -Eq 1)) -And ($HelperRunning -Eq $False) -And ($Null -Eq $Script:SignInReadyAt)
+    $WaitingForSignIn = ($WifiConnected -Eq $True) -And ($Script:SignInUnlocked -Eq $False) -And ($QuietNetwork -Eq $False)
     $Script:OpenSignInButton.IsEnabled = ($SignInReady -Eq $True) -And ($SignInBusy -Eq $False)
     Update-Step3Badge -Ready $SignInReady
     Set-SignInPrompt -Waiting $WaitingForSignIn
