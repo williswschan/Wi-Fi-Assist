@@ -1216,6 +1216,8 @@ $Script:AgentWasRunning = $Null
 $Script:LastLoggedSignal = ""
 $Script:SignInWaitFlashing = $False
 $Script:SignalLabel = ""
+$Script:WifiConnectivityLevel = -1
+$Script:LastLoggedConnectivityLevel = ""
 $Script:SecureClientPath = "C:\Program Files (x86)\Cisco\Cisco Secure Client\UI\csc_ui.exe"
 $Script:SecureClientStartFailed = $False
 
@@ -1414,10 +1416,14 @@ Function Start-SecureClient {
     }
 }
 
-Function Test-WifiSignInReady {
+Function Update-WifiConnectivityLevel {
     Try {
         $Null = [Windows.Networking.Connectivity.NetworkInformation, Windows.Networking.Connectivity, ContentType=WindowsRuntime]
         $Profiles = @([Windows.Networking.Connectivity.NetworkInformation]::GetConnectionProfiles())
+        $Found = $False
+        $Captive = $False
+        $Internet = $False
+        $Local = $False
         ForEach ($Profile in $Profiles) {
             $Adapter = $Profile.NetworkAdapter
             If ($Null -Eq $Adapter) {
@@ -1426,18 +1432,54 @@ Function Test-WifiSignInReady {
             If ([Int]$Adapter.IanaInterfaceType -Ne 71) {
                 Continue
             }
-            # None = 0. LocalAccess, a captive portal, or Internet all mean Windows has finished connecting.
+            $Found = $True
             $LevelValue = [Int]$Profile.GetNetworkConnectivityLevel()
-            If ($LevelValue -Ge 1) {
-                Return $True
+            If ($LevelValue -Eq 2) {
+                $Captive = $True
+            }
+            ElseIf ($LevelValue -Eq 3) {
+                $Internet = $True
+            }
+            ElseIf ($LevelValue -Ge 1) {
+                $Local = $True
             }
         }
-        Return $False
+
+        If ($Found -Eq $False) {
+            $Script:WifiConnectivityLevel = -1
+        }
+        ElseIf ($Captive -Eq $True) {
+            $Script:WifiConnectivityLevel = 2
+        }
+        ElseIf ($Internet -Eq $True) {
+            $Script:WifiConnectivityLevel = 3
+        }
+        ElseIf ($Local -Eq $True) {
+            $Script:WifiConnectivityLevel = 1
+        }
+        Else {
+            $Script:WifiConnectivityLevel = 0
+        }
     }
     Catch {
+        $Script:WifiConnectivityLevel = -1
         Write-SignInLog ("[WARN] Wi-Fi readiness check failed: " + [String]$Error[0])
+    }
+
+    $LevelText = [String]$Script:WifiConnectivityLevel
+    If ($LevelText -Ne $Script:LastLoggedConnectivityLevel) {
+        Write-SignInLog ("[INFO] Wi-Fi connectivity level is " + $LevelText + ".")
+        $Script:LastLoggedConnectivityLevel = $LevelText
+    }
+}
+
+Function Test-WifiSignInReady {
+    # None = 0. LocalAccess, a captive portal, or Internet all mean Windows has finished connecting.
+    # Unknown stays connected so a failed reading does not leave the status on Connecting.
+    If ($Script:WifiConnectivityLevel -Lt 0) {
         Return $True
     }
+    Return ($Script:WifiConnectivityLevel -Ge 1)
 }
 
 Function Set-SignalIndicator {
@@ -1551,6 +1593,13 @@ Function Update-HelpMessage {
         Return
     }
 
+    If (($Script:LinkState -Eq "Connected") -And ($Script:WifiConnectivityLevel -Eq 3)) {
+        Set-HelpRuns -Title "Need help?" -Parts @(
+            @{ Text = "No sign-in page is required on this network. You can continue with the VPN connection." }
+        )
+        Return
+    }
+
     $WeakSignal = ($Script:SignalLabel -Eq "Low") -Or ($Script:SignalLabel -Eq "Poor")
     If (($Script:LinkState -Eq "Connected") -And ($WeakSignal -Eq $True)) {
         Set-HelpRuns -Title "Need help?" -Parts @(
@@ -1562,6 +1611,13 @@ Function Update-HelpMessage {
     }
 
     If ($Script:LinkState -Eq "Connected") {
+        If ($Script:WifiConnectivityLevel -Eq 1) {
+            Set-HelpRuns -Title "Need help?" -Parts @(
+                @{ Text = "Windows is still checking whether this network requires a sign-in page." }
+            )
+            Return
+        }
+
         Set-HelpRuns -Title "Please wait" -Parts @(
             @{ Text = "The sign-in button will be available shortly." }
         )
@@ -1583,6 +1639,7 @@ Function Update-HelpMessage {
 Function Update-WifiStatus {
     Try {
         $Snapshot = [WifiMonitor]::Query()
+        Update-WifiConnectivityLevel
         $ReportedState = [String]$Snapshot.State
         If (($ReportedState -Eq "Connected") -And ((Test-WifiSignInReady) -Eq $False)) {
             $ReportedState = "Connecting"
@@ -1697,6 +1754,8 @@ Function Update-SignInButtonState {
 
     $WifiConnected = $Script:LinkState -Eq "Connected"
     $HelperRunning = Test-AcwebHelperRunning
+    $CaptivePortal = $Script:WifiConnectivityLevel -Eq 2
+    $PortalUnknown = $Script:WifiConnectivityLevel -Lt 0
     If ($WifiConnected -Eq $False) {
         $Script:SignInUnlocked = $False
         $Script:SignInReadyAt = $Null
@@ -1705,16 +1764,22 @@ Function Update-SignInButtonState {
     ElseIf ($Script:SignInUnlocked -Eq $True) {
         Stop-SignInEnableDelay
     }
-    ElseIf ($HelperRunning -Eq $True) {
-        If ($Null -Eq $Script:SignInReadyAt) {
-            $Script:SignInReadyAt = Get-Date
-            Start-SignInEnableDelay
-            Write-SignInLog "[INFO] acwebhelper.exe is running. Sign-in button enables in 7 seconds."
+    ElseIf (($CaptivePortal -Eq $True) -Or ($PortalUnknown -Eq $True)) {
+        If ($HelperRunning -Eq $True) {
+            If ($Null -Eq $Script:SignInReadyAt) {
+                $Script:SignInReadyAt = Get-Date
+                Start-SignInEnableDelay
+                Write-SignInLog "[INFO] acwebhelper.exe is running. Sign-in button enables in 7 seconds."
+            }
+            ElseIf (((Get-Date) - $Script:SignInReadyAt).TotalSeconds -Ge 7) {
+                $Script:SignInUnlocked = $True
+                Stop-SignInEnableDelay
+                Write-SignInLog "[INFO] Sign-in button enabled."
+            }
         }
-        ElseIf (((Get-Date) - $Script:SignInReadyAt).TotalSeconds -Ge 7) {
-            $Script:SignInUnlocked = $True
+        Else {
+            $Script:SignInReadyAt = $Null
             Stop-SignInEnableDelay
-            Write-SignInLog "[INFO] Sign-in button enabled."
         }
     }
     Else {
@@ -1724,7 +1789,7 @@ Function Update-SignInButtonState {
 
     $SignInBusy = $Script:IsOpening -Eq $True
     $SignInReady = ($WifiConnected -Eq $True) -And ($Script:SignInUnlocked -Eq $True)
-    $WaitingForSignIn = ($WifiConnected -Eq $True) -And ($Script:SignInUnlocked -Eq $False)
+    $WaitingForSignIn = ($WifiConnected -Eq $True) -And ($Script:SignInUnlocked -Eq $False) -And (($CaptivePortal -Eq $True) -Or ($PortalUnknown -Eq $True))
     $Script:OpenSignInButton.IsEnabled = ($SignInReady -Eq $True) -And ($SignInBusy -Eq $False)
     Update-Step3Badge -Ready $SignInReady
     Set-SignInPrompt -Waiting $WaitingForSignIn
@@ -1742,7 +1807,7 @@ Function Set-SignInPrompt {
 
     If ($Waiting -Eq $True) {
         $Script:SignInButtonLabel.Text = "Please wait"
-        $Script:SignInCaption.Text = "Wi-Fi sign-in is being prepared. The authentication page will be available shortly."
+        $Script:SignInCaption.Text = "Wi-Fi sign-in is being prepared. The sign-in page will be available shortly."
         [System.Windows.Automation.AutomationProperties]::SetName($Script:OpenSignInButton, "Please wait")
         Start-SignInWaitFlash
         Return
@@ -1844,9 +1909,9 @@ Function Get-SignInResultMessage {
         [String]$Browser
     )
 
-    $Lead = "Launching the authentication page in your default browser."
+    $Lead = "Launching the sign-in page in your default browser."
     If ($Browser -Eq "Edge") {
-        $Lead = "Launching the authentication page in Microsoft Edge."
+        $Lead = "Launching the sign-in page in Microsoft Edge."
     }
     If ($CiscoState -Eq "StillOpen") {
         $Lead = $Lead + " If the sign-in page does not appear, try again."
