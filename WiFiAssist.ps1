@@ -1995,10 +1995,8 @@ Function Set-WindowArtwork {
         If ($Null -Ne $HeaderBanner) {
             $ShadowMargin = 14
             $FrameThickness = 1
-            $ContentMargin = 12
-            $BannerScale = 3.0
-            $ContentWidth = [Math]::Round([Double]$HeaderImage.PixelWidth / $BannerScale)
-            $BannerWidth = $ContentWidth + ($ContentMargin * 2)
+            # Keep the previous window width. A replacement PNG must not resize the app.
+            $BannerWidth = 499
             $BannerHeight = [Math]::Round($BannerWidth * [Double]$HeaderImage.PixelHeight / [Double]$HeaderImage.PixelWidth)
             $HeaderBanner.Stretch = [System.Windows.Media.Stretch]::Uniform
             $HeaderBanner.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Stretch
