@@ -1218,6 +1218,9 @@ $Script:SignInWaitFlashing = $False
 $Script:SignalLabel = ""
 $Script:WifiConnectivityLevel = -1
 $Script:LastLoggedConnectivityLevel = ""
+$Script:OtherAdapterHasInternet = $False
+$Script:LocalAccessSince = $Null
+$Script:LastLoggedLocalAccess = ""
 $Script:SecureClientPath = "C:\Program Files (x86)\Cisco\Cisco Secure Client\UI\csc_ui.exe"
 $Script:SecureClientStartFailed = $False
 
@@ -1424,16 +1427,20 @@ Function Update-WifiConnectivityLevel {
         $Captive = $False
         $Internet = $False
         $Local = $False
+        $OtherInternet = $False
         ForEach ($Profile in $Profiles) {
             $Adapter = $Profile.NetworkAdapter
             If ($Null -Eq $Adapter) {
                 Continue
             }
+            $LevelValue = [Int]$Profile.GetNetworkConnectivityLevel()
             If ([Int]$Adapter.IanaInterfaceType -Ne 71) {
+                If ($LevelValue -Eq 3) {
+                    $OtherInternet = $True
+                }
                 Continue
             }
             $Found = $True
-            $LevelValue = [Int]$Profile.GetNetworkConnectivityLevel()
             If ($LevelValue -Eq 2) {
                 $Captive = $True
             }
@@ -1445,6 +1452,7 @@ Function Update-WifiConnectivityLevel {
             }
         }
 
+        $Script:OtherAdapterHasInternet = $OtherInternet
         If ($Found -Eq $False) {
             $Script:WifiConnectivityLevel = -1
         }
@@ -1463,7 +1471,17 @@ Function Update-WifiConnectivityLevel {
     }
     Catch {
         $Script:WifiConnectivityLevel = -1
+        $Script:OtherAdapterHasInternet = $False
         Write-SignInLog ("[WARN] Wi-Fi readiness check failed: " + [String]$Error[0])
+    }
+
+    If ($Script:WifiConnectivityLevel -Eq 1) {
+        If ($Null -Eq $Script:LocalAccessSince) {
+            $Script:LocalAccessSince = Get-Date
+        }
+    }
+    Else {
+        $Script:LocalAccessSince = $Null
     }
 
     $LevelText = [String]$Script:WifiConnectivityLevel
@@ -1471,6 +1489,50 @@ Function Update-WifiConnectivityLevel {
         Write-SignInLog ("[INFO] Wi-Fi connectivity level is " + $LevelText + ".")
         $Script:LastLoggedConnectivityLevel = $LevelText
     }
+
+    $LocalAccessText = "not-local"
+    If ($Script:WifiConnectivityLevel -Eq 1) {
+        $LocalAccessText = "checking"
+        If ($Script:OtherAdapterHasInternet -Eq $True) {
+            $LocalAccessText = "other-internet"
+        }
+        ElseIf ((Test-LocalAccessSettled) -Eq $True) {
+            $LocalAccessText = "settled"
+        }
+    }
+    If ($LocalAccessText -Ne $Script:LastLoggedLocalAccess) {
+        Write-SignInLog ("[INFO] Wi-Fi local-access state is " + $LocalAccessText + ".")
+        $Script:LastLoggedLocalAccess = $LocalAccessText
+    }
+}
+
+Function Test-LocalAccessSettled {
+    If ($Script:OtherAdapterHasInternet -Eq $True) {
+        Return $True
+    }
+    If ($Null -Eq $Script:LocalAccessSince) {
+        Return $False
+    }
+    Return (((Get-Date) - $Script:LocalAccessSince).TotalSeconds -Ge 15)
+}
+
+Function Test-NoSignInRequired {
+    If ($Script:LinkState -Ne "Connected") {
+        Return $False
+    }
+    If ($Null -Ne $Script:SignInReadyAt) {
+        Return $False
+    }
+    If ((Test-AcwebHelperRunning) -Eq $True) {
+        Return $False
+    }
+    If ($Script:WifiConnectivityLevel -Eq 3) {
+        Return $True
+    }
+    If ($Script:WifiConnectivityLevel -Ne 1) {
+        Return $False
+    }
+    Return (Test-LocalAccessSettled)
 }
 
 Function Test-WifiSignInReady {
@@ -1612,7 +1674,7 @@ Function Update-HelpMessage {
         Return
     }
 
-    If (($Script:LinkState -Eq "Connected") -And ($Script:WifiConnectivityLevel -Eq 3) -And ($Null -Eq $Script:SignInReadyAt) -And ((Test-AcwebHelperRunning) -Eq $False)) {
+    If ((Test-NoSignInRequired) -Eq $True) {
         Set-HelpRuns -Title "Need help?" -Parts (Add-WeakSignalParts -Parts @(
             @{ Text = "No sign-in page is required on this network." }
         ))
