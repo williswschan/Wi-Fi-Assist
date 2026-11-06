@@ -1006,141 +1006,6 @@ If ($Null -Eq ([System.Management.Automation.PSTypeName]"CiscoBrowserCloser").Ty
     Add-Type -TypeDefinition $CiscoBrowserSource -Language CSharp
 }
 
-$CiscoFailoverNoticeSource = @'
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-
-public static class CiscoFailoverNotice
-{
-    private const string NoticeMarker = "retry logging on with the service provider";
-    private static bool FoundNotice;
-    private static IntPtr OkButton;
-
-    public static bool TryDismiss()
-    {
-        try
-        {
-            FoundNotice = false;
-            OkButton = IntPtr.Zero;
-            EnumWindows(OnWindow, IntPtr.Zero);
-            if (!FoundNotice || OkButton == IntPtr.Zero)
-            {
-                return false;
-            }
-
-            PostMessage(OkButton, 0x00F5, IntPtr.Zero, IntPtr.Zero);
-            return true;
-        }
-        catch (Exception)
-        {
-            return false;
-        }
-    }
-
-    private static bool OnWindow(IntPtr handle, IntPtr lParam)
-    {
-        if (!IsWindowVisible(handle))
-        {
-            return true;
-        }
-
-        FoundNotice = false;
-        OkButton = IntPtr.Zero;
-        EnumChildWindows(handle, OnChild, IntPtr.Zero);
-        if (FoundNotice && OkButton != IntPtr.Zero)
-        {
-            return false;
-        }
-
-        FoundNotice = false;
-        OkButton = IntPtr.Zero;
-        return true;
-    }
-
-    private static bool OnChild(IntPtr handle, IntPtr lParam)
-    {
-        string text = ReadText(handle);
-        if (text.IndexOf(NoticeMarker, StringComparison.OrdinalIgnoreCase) >= 0)
-        {
-            FoundNotice = true;
-        }
-
-        if (IsOkButton(text) && IsButton(handle))
-        {
-            OkButton = handle;
-        }
-
-        return true;
-    }
-
-    private static bool IsOkButton(string name)
-    {
-        if (name == null)
-        {
-            return false;
-        }
-
-        string trimmed = name.Replace("&", "").Trim();
-        return string.Equals(trimmed, "OK", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsButton(IntPtr handle)
-    {
-        string className = ReadClassName(handle);
-        if (string.Equals(className, "Button", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        return className.IndexOf("BUTTON", StringComparison.OrdinalIgnoreCase) >= 0;
-    }
-
-    private static string ReadText(IntPtr handle)
-    {
-        StringBuilder text = new StringBuilder(2048);
-        GetWindowText(handle, text, text.Capacity);
-        return text.ToString();
-    }
-
-    private static string ReadClassName(IntPtr handle)
-    {
-        StringBuilder text = new StringBuilder(256);
-        GetClassName(handle, text, text.Capacity);
-        return text.ToString();
-    }
-
-    private delegate bool EnumWindowsProc(IntPtr handle, IntPtr lParam);
-    private delegate bool EnumChildProc(IntPtr handle, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool EnumChildWindows(IntPtr parent, EnumChildProc callback, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool IsWindowVisible(IntPtr handle);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern int GetWindowText(IntPtr handle, StringBuilder text, int maxCount);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern int GetClassName(IntPtr handle, StringBuilder text, int maxCount);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool PostMessage(IntPtr handle, uint message, IntPtr wParam, IntPtr lParam);
-}
-'@
-
-If ($Null -Eq ([System.Management.Automation.PSTypeName]"CiscoFailoverNotice").Type) {
-    Add-Type -TypeDefinition $CiscoFailoverNoticeSource -Language CSharp
-}
-
 $NetworkChangeRelaySource = @'
 using System;
 using System.Net.NetworkInformation;
@@ -2065,7 +1930,6 @@ Function Invoke-SignInPage {
     $Script:IsOpening = $True
     $Script:OpenSignInButton.IsEnabled = $False
     Write-SignInLog "[INFO] Open sign-in page clicked."
-    Start-FailoverNoticeMonitor
     $CloseRequests = [CiscoBrowserCloser]::RequestClose()
     Write-SignInLog ("[INFO] Cisco browser close requests=" + $CloseRequests)
     If ($CloseRequests -Gt 0) {
@@ -2118,41 +1982,6 @@ Function Update-WindowCornerClip {
     $Script:WindowSurface.Clip = $ClipGeometry
 }
 
-Function Start-FailoverNoticeMonitor {
-    If ($Script:FailoverNoticeTimer -Ne $Null) {
-        $Script:FailoverNoticeTimer.Stop()
-    }
-
-    $Script:FailoverNoticeDeadline = (Get-Date).AddSeconds(5)
-    $Script:FailoverNoticeTimer = New-Object System.Windows.Threading.DispatcherTimer
-    $Script:FailoverNoticeTimer.Interval = [TimeSpan]::FromMilliseconds(250)
-    $Script:FailoverNoticeTimer.Add_Tick({ Update-FailoverNoticeMonitor })
-    $Script:FailoverNoticeTimer.Start()
-    Write-SignInLog "[INFO] Watching for the Cisco failover notice for 5 seconds."
-}
-
-Function Update-FailoverNoticeMonitor {
-    Try {
-        If ((Get-Date) -Gt $Script:FailoverNoticeDeadline) {
-            $Script:FailoverNoticeTimer.Stop()
-            Write-SignInLog "[INFO] Cisco failover notice was not shown. Monitor stopped."
-            Return
-        }
-
-        If ([CiscoFailoverNotice]::TryDismiss() -Eq $True) {
-            $Script:FailoverNoticeTimer.Stop()
-            Write-SignInLog "[INFO] Cisco failover notice was dismissed."
-        }
-    }
-    Catch {
-        If ($Script:FailoverNoticeTimer -Ne $Null) {
-            $Script:FailoverNoticeTimer.Stop()
-        }
-
-        Write-SignInLog ("[ERROR] Cisco failover notice monitor failed: " + [String]$Error[0])
-    }
-}
-
 Function Close-SignInWindow {
     If ($Script:Timer -Ne $Null) {
         $Script:Timer.Stop()
@@ -2164,10 +1993,6 @@ Function Close-SignInWindow {
 
     If ($Null -Ne ([System.Management.Automation.PSTypeName]"NetworkChangeRelay").Type) {
         [NetworkChangeRelay]::Stop()
-    }
-
-    If ($Script:FailoverNoticeTimer -Ne $Null) {
-        $Script:FailoverNoticeTimer.Stop()
     }
 
     Stop-SignInEnableDelay
