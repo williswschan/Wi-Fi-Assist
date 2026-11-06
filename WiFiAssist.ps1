@@ -1219,8 +1219,8 @@ $Script:SignalLabel = ""
 $Script:WifiConnectivityLevel = -1
 $Script:LastLoggedConnectivityLevel = ""
 $Script:OtherAdapterHasInternet = $False
-$Script:LocalAccessSince = $Null
-$Script:LastLoggedLocalAccess = ""
+$Script:ConnectedSince = $Null
+$Script:LastLoggedSignInDecision = ""
 $Script:SecureClientPath = "C:\Program Files (x86)\Cisco\Cisco Secure Client\UI\csc_ui.exe"
 $Script:SecureClientStartFailed = $False
 
@@ -1475,45 +1475,18 @@ Function Update-WifiConnectivityLevel {
         Write-SignInLog ("[WARN] Wi-Fi readiness check failed: " + [String]$Error[0])
     }
 
-    If ($Script:WifiConnectivityLevel -Eq 1) {
-        If ($Null -Eq $Script:LocalAccessSince) {
-            $Script:LocalAccessSince = Get-Date
-        }
-    }
-    Else {
-        $Script:LocalAccessSince = $Null
-    }
-
     $LevelText = [String]$Script:WifiConnectivityLevel
     If ($LevelText -Ne $Script:LastLoggedConnectivityLevel) {
         Write-SignInLog ("[INFO] Wi-Fi connectivity level is " + $LevelText + ".")
         $Script:LastLoggedConnectivityLevel = $LevelText
     }
-
-    $LocalAccessText = "not-local"
-    If ($Script:WifiConnectivityLevel -Eq 1) {
-        $LocalAccessText = "checking"
-        If ($Script:OtherAdapterHasInternet -Eq $True) {
-            $LocalAccessText = "other-internet"
-        }
-        ElseIf ((Test-LocalAccessSettled) -Eq $True) {
-            $LocalAccessText = "settled"
-        }
-    }
-    If ($LocalAccessText -Ne $Script:LastLoggedLocalAccess) {
-        Write-SignInLog ("[INFO] Wi-Fi local-access state is " + $LocalAccessText + ".")
-        $Script:LastLoggedLocalAccess = $LocalAccessText
-    }
 }
 
-Function Test-LocalAccessSettled {
-    If ($Script:OtherAdapterHasInternet -Eq $True) {
-        Return $True
-    }
-    If ($Null -Eq $Script:LocalAccessSince) {
+Function Test-SignInCheckElapsed {
+    If ($Null -Eq $Script:ConnectedSince) {
         Return $False
     }
-    Return (((Get-Date) - $Script:LocalAccessSince).TotalSeconds -Ge 15)
+    Return (((Get-Date) - $Script:ConnectedSince).TotalSeconds -Ge 60)
 }
 
 Function Test-NoSignInRequired {
@@ -1526,13 +1499,13 @@ Function Test-NoSignInRequired {
     If ((Test-AcwebHelperRunning) -Eq $True) {
         Return $False
     }
-    If ($Script:WifiConnectivityLevel -Eq 3) {
-        Return $True
-    }
-    If ($Script:WifiConnectivityLevel -Ne 1) {
+    If ($Script:WifiConnectivityLevel -Eq 2) {
         Return $False
     }
-    Return (Test-LocalAccessSettled)
+    If ($Script:OtherAdapterHasInternet -Eq $True) {
+        Return $True
+    }
+    Return (Test-SignInCheckElapsed)
 }
 
 Function Test-WifiSignInReady {
@@ -1682,15 +1655,16 @@ Function Update-HelpMessage {
     }
 
     If ($Script:LinkState -Eq "Connected") {
-        If (($Script:WifiConnectivityLevel -Eq 1) -And ($Null -Eq $Script:SignInReadyAt) -And ((Test-AcwebHelperRunning) -Eq $False)) {
-            Set-HelpRuns -Title "Need help?" -Parts (Add-WeakSignalParts -Parts @(
-                @{ Text = "Windows is still checking whether this network requires a sign-in page." }
+        $AwaitingPortal = ($Script:WifiConnectivityLevel -Eq 2) -Or ($Null -Ne $Script:SignInReadyAt) -Or ((Test-AcwebHelperRunning) -Eq $True)
+        If ($AwaitingPortal -Eq $True) {
+            Set-HelpRuns -Title "Please wait" -Parts (Add-WeakSignalParts -Parts @(
+                @{ Text = "The sign-in button will be available shortly." }
             ))
             Return
         }
 
-        Set-HelpRuns -Title "Please wait" -Parts (Add-WeakSignalParts -Parts @(
-            @{ Text = "The sign-in button will be available shortly." }
+        Set-HelpRuns -Title "Need help?" -Parts (Add-WeakSignalParts -Parts @(
+            @{ Text = "Windows is still checking whether this network requires a sign-in page." }
         ))
         Return
     }
@@ -1716,6 +1690,14 @@ Function Update-WifiStatus {
             $ReportedState = "Connecting"
         }
         $Script:LinkState = $ReportedState
+        If ($Script:LinkState -Eq "Connected") {
+            If ($Null -Eq $Script:ConnectedSince) {
+                $Script:ConnectedSince = Get-Date
+            }
+        }
+        Else {
+            $Script:ConnectedSince = $Null
+        }
 
         If ($Script:LinkState -Ne $Script:LastLoggedLinkState) {
             Write-SignInLog ("[INFO] Wi-Fi state is " + $Script:LinkState + ". " + [String]$Snapshot.Detail)
@@ -1852,12 +1834,35 @@ Function Update-SignInButtonState {
 
     $SignInBusy = $Script:IsOpening -Eq $True
     $SignInReady = ($WifiConnected -Eq $True) -And ($Script:SignInUnlocked -Eq $True)
-    $QuietNetwork = (($Script:WifiConnectivityLevel -Eq 3) -Or ($Script:WifiConnectivityLevel -Eq 1)) -And ($HelperRunning -Eq $False) -And ($Null -Eq $Script:SignInReadyAt)
-    $WaitingForSignIn = ($WifiConnected -Eq $True) -And ($Script:SignInUnlocked -Eq $False) -And ($QuietNetwork -Eq $False)
+    $AwaitingPortal = ($Script:WifiConnectivityLevel -Eq 2) -Or ($HelperRunning -Eq $True) -Or ($Null -Ne $Script:SignInReadyAt)
+    $WaitingForSignIn = ($WifiConnected -Eq $True) -And ($Script:SignInUnlocked -Eq $False) -And ($AwaitingPortal -Eq $True)
     $Script:OpenSignInButton.IsEnabled = ($SignInReady -Eq $True) -And ($SignInBusy -Eq $False)
     Update-Step3Badge -Ready $SignInReady
     Set-SignInPrompt -Waiting $WaitingForSignIn
     Update-HelpMessage
+    Update-SignInDecisionLog
+}
+
+Function Update-SignInDecisionLog {
+    $Decision = "offline"
+    If ($Script:LinkState -Eq "Connected") {
+        If ($Script:WifiConnectivityLevel -Eq 2) {
+            $Decision = "captive"
+        }
+        ElseIf (($Null -Ne $Script:SignInReadyAt) -Or ((Test-AcwebHelperRunning) -Eq $True)) {
+            $Decision = "helper"
+        }
+        ElseIf ((Test-NoSignInRequired) -Eq $True) {
+            $Decision = "no-sign-in"
+        }
+        Else {
+            $Decision = "checking"
+        }
+    }
+    If ($Decision -Ne $Script:LastLoggedSignInDecision) {
+        Write-SignInLog ("[INFO] Sign-in decision is " + $Decision + ".")
+        $Script:LastLoggedSignInDecision = $Decision
+    }
 }
 
 Function Set-SignInPrompt {
