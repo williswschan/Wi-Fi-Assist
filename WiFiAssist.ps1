@@ -2031,18 +2031,19 @@ Function Show-QuickGuide {
     }
 
     $WorkArea = [System.Windows.SystemParameters]::WorkArea
-    $PictureWidth = 520
+    $PictureWidth = 1536
+    $PictureHeight = 1024
     $Content = $Null
     If ($Null -Ne $GuideImage) {
         $Picture = New-Object System.Windows.Controls.Image
         $Picture.Source = $GuideImage
         $Picture.Width = $PictureWidth
-        $Picture.Height = [Math]::Round($PictureWidth * [Double]$GuideImage.PixelHeight / [Double]$GuideImage.PixelWidth)
+        $Picture.Height = $PictureHeight
         $Picture.Stretch = [System.Windows.Media.Stretch]::Uniform
         [System.Windows.Media.RenderOptions]::SetBitmapScalingMode($Picture, [System.Windows.Media.BitmapScalingMode]::HighQuality)
         $Scroll = New-Object System.Windows.Controls.ScrollViewer
         $Scroll.VerticalScrollBarVisibility = [System.Windows.Controls.ScrollBarVisibility]::Auto
-        $Scroll.HorizontalScrollBarVisibility = [System.Windows.Controls.ScrollBarVisibility]::Disabled
+        $Scroll.HorizontalScrollBarVisibility = [System.Windows.Controls.ScrollBarVisibility]::Auto
         $Scroll.Content = $Picture
         $Content = $Scroll
     }
@@ -2059,9 +2060,11 @@ Function Show-QuickGuide {
     $GuideWindow = New-Object System.Windows.Window
     $GuideWindow.Title = "Quick guide"
     $GuideWindow.Owner = $Script:Window
-    $GuideWindow.WindowStartupLocation = [System.Windows.WindowStartupLocation]::CenterOwner
-    $GuideWindow.Width = 560
-    $GuideWindow.Height = [Math]::Min(860, ($WorkArea.Height - 48))
+    $GuideWindow.WindowStartupLocation = [System.Windows.WindowStartupLocation]::CenterScreen
+    $FrameWidth = 16
+    $FrameHeight = 39
+    $GuideWindow.Width = [Math]::Min(($PictureWidth + $FrameWidth), $WorkArea.Width)
+    $GuideWindow.Height = [Math]::Min(($PictureHeight + $FrameHeight), $WorkArea.Height)
     $GuideWindow.MinWidth = 360
     $GuideWindow.MinHeight = 320
     $GuideWindow.ResizeMode = [System.Windows.ResizeMode]::CanResize
