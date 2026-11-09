@@ -1996,6 +1996,88 @@ Function Close-SignInWindow {
     }
 
     Stop-SignInEnableDelay
+    If (($Script:QuickGuideWindow -Ne $Null) -And ($Script:QuickGuideWindow.IsLoaded -Eq $True)) {
+        $Script:QuickGuideWindow.Close()
+    }
+}
+
+Function Show-QuickGuide {
+    If (($Script:QuickGuideWindow -Ne $Null) -And ($Script:QuickGuideWindow.IsLoaded -Eq $True)) {
+        If ($Script:QuickGuideWindow.WindowState -Eq [System.Windows.WindowState]::Minimized) {
+            $Script:QuickGuideWindow.WindowState = [System.Windows.WindowState]::Normal
+        }
+        $Script:QuickGuideWindow.Activate() | Out-Null
+        Return
+    }
+
+    $GuidePath = Join-Path (Join-Path (Split-Path -Parent $PSCommandPath) "Assets") "Quick_Guide.png"
+    $GuideImage = $Null
+    If ((Test-Path -LiteralPath $GuidePath) -Eq $True) {
+        Try {
+            $GuideImage = New-Object System.Windows.Media.Imaging.BitmapImage
+            $GuideImage.BeginInit()
+            $GuideImage.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+            $GuideImage.UriSource = New-Object System.Uri $GuidePath
+            $GuideImage.EndInit()
+            $GuideImage.Freeze()
+        }
+        Catch {
+            $GuideImage = $Null
+            Write-SignInLog ("[WARN] Quick guide could not be loaded: " + [String]$Error[0])
+        }
+    }
+    Else {
+        Write-SignInLog "[WARN] Quick guide was not found."
+    }
+
+    $WorkArea = [System.Windows.SystemParameters]::WorkArea
+    $PictureWidth = 520
+    $Content = $Null
+    If ($Null -Ne $GuideImage) {
+        $Picture = New-Object System.Windows.Controls.Image
+        $Picture.Source = $GuideImage
+        $Picture.Width = $PictureWidth
+        $Picture.Height = [Math]::Round($PictureWidth * [Double]$GuideImage.PixelHeight / [Double]$GuideImage.PixelWidth)
+        $Picture.Stretch = [System.Windows.Media.Stretch]::Uniform
+        [System.Windows.Media.RenderOptions]::SetBitmapScalingMode($Picture, [System.Windows.Media.BitmapScalingMode]::HighQuality)
+        $Scroll = New-Object System.Windows.Controls.ScrollViewer
+        $Scroll.VerticalScrollBarVisibility = [System.Windows.Controls.ScrollBarVisibility]::Auto
+        $Scroll.HorizontalScrollBarVisibility = [System.Windows.Controls.ScrollBarVisibility]::Disabled
+        $Scroll.Content = $Picture
+        $Content = $Scroll
+    }
+    Else {
+        $Missing = New-Object System.Windows.Controls.TextBlock
+        $Missing.Text = "The quick guide was not found."
+        $Missing.Margin = New-Object System.Windows.Thickness 24
+        $Missing.TextWrapping = [System.Windows.TextWrapping]::Wrap
+        $Missing.FontSize = 14
+        $Missing.Foreground = $Script:TitleBrush
+        $Content = $Missing
+    }
+
+    $GuideWindow = New-Object System.Windows.Window
+    $GuideWindow.Title = "Quick guide"
+    $GuideWindow.Owner = $Script:Window
+    $GuideWindow.WindowStartupLocation = [System.Windows.WindowStartupLocation]::CenterOwner
+    $GuideWindow.Width = 560
+    $GuideWindow.Height = [Math]::Min(860, ($WorkArea.Height - 48))
+    $GuideWindow.MinWidth = 360
+    $GuideWindow.MinHeight = 320
+    $GuideWindow.ResizeMode = [System.Windows.ResizeMode]::CanResize
+    $GuideWindow.ShowInTaskbar = $False
+    $GuideWindow.Topmost = $True
+    $GuideWindow.Background = [System.Windows.Media.Brushes]::White
+    $GuideWindow.Content = $Content
+    If ($Null -Ne $Script:Window.Icon) {
+        $GuideWindow.Icon = $Script:Window.Icon
+    }
+    $GuideWindow.Add_Closed({
+        $Script:QuickGuideWindow = $Null
+    })
+    $Script:QuickGuideWindow = $GuideWindow
+    $GuideWindow.Show()
+    Write-SignInLog "[INFO] Opened the quick guide."
 }
 
 Function Set-WindowArtwork {
@@ -2265,6 +2347,13 @@ $WindowXaml = @'
                            Foreground="#1A2332"
                            TextTrimming="CharacterEllipsis" />
                 <StackPanel Grid.Column="2" Orientation="Horizontal">
+                    <Button x:Name="GuideButton"
+                            Style="{StaticResource CaptionButtonStyle}"
+                            Content="&#xE946;"
+                            FontSize="16"
+                            ToolTip="Quick guide"
+                            AutomationProperties.AutomationId="GuideButton"
+                            AutomationProperties.Name="Quick guide" />
                     <Button x:Name="MinimizeButton"
                             Style="{StaticResource CaptionButtonStyle}"
                             Content="&#xE921;"
@@ -2474,11 +2563,12 @@ $Script:ChangeNetworkLabel = $Script:Window.FindName("ChangeNetworkLabel")
 $Script:HelpTitle = $Script:Window.FindName("HelpTitle")
 $Script:HelpBody = $Script:Window.FindName("HelpBody")
 $Script:MinimizeButton = $Script:Window.FindName("MinimizeButton")
+$Script:GuideButton = $Script:Window.FindName("GuideButton")
 $Script:CloseButton = $Script:Window.FindName("CloseButton")
 $Script:WindowSurface = $Script:Window.FindName("WindowSurface")
 $Script:TitleBar = $Script:Window.FindName("TitleBar")
 
-If (($Null -Eq $Script:StatusCard) -Or ($Null -Eq $Script:StatusText) -Or ($Null -Eq $Script:NetworkText) -Or ($Null -Eq $Script:SignalRow) -Or ($Null -Eq $Script:SignalDot) -Or ($Null -Eq $Script:SignalText) -Or ($Null -Eq $Script:OpenSignInButton) -Or ($Null -Eq $Script:SignInButtonLabel) -Or ($Null -Eq $Script:SignInCaption) -Or ($Null -Eq $Script:ResultText) -Or ($Null -Eq $Script:Step1Badge) -Or ($Null -Eq $Script:Step1Mark) -Or ($Null -Eq $Script:Step1Icon) -Or ($Null -Eq $Script:Step1Title) -Or ($Null -Eq $Script:Step1Detail) -Or ($Null -Eq $Script:StartClientButton) -Or ($Null -Eq $Script:Step2Badge) -Or ($Null -Eq $Script:Step2Mark) -Or ($Null -Eq $Script:Step2Icon) -Or ($Null -Eq $Script:Step3Badge) -Or ($Null -Eq $Script:Step3Mark) -Or ($Null -Eq $Script:ChangeNetworkButton) -Or ($Null -Eq $Script:ChangeNetworkLabel) -Or ($Null -Eq $Script:HelpTitle) -Or ($Null -Eq $Script:HelpBody) -Or ($Null -Eq $Script:MinimizeButton) -Or ($Null -Eq $Script:CloseButton) -Or ($Null -Eq $Script:WindowSurface) -Or ($Null -Eq $Script:TitleBar)) {
+If (($Null -Eq $Script:StatusCard) -Or ($Null -Eq $Script:StatusText) -Or ($Null -Eq $Script:NetworkText) -Or ($Null -Eq $Script:SignalRow) -Or ($Null -Eq $Script:SignalDot) -Or ($Null -Eq $Script:SignalText) -Or ($Null -Eq $Script:OpenSignInButton) -Or ($Null -Eq $Script:SignInButtonLabel) -Or ($Null -Eq $Script:SignInCaption) -Or ($Null -Eq $Script:ResultText) -Or ($Null -Eq $Script:Step1Badge) -Or ($Null -Eq $Script:Step1Mark) -Or ($Null -Eq $Script:Step1Icon) -Or ($Null -Eq $Script:Step1Title) -Or ($Null -Eq $Script:Step1Detail) -Or ($Null -Eq $Script:StartClientButton) -Or ($Null -Eq $Script:Step2Badge) -Or ($Null -Eq $Script:Step2Mark) -Or ($Null -Eq $Script:Step2Icon) -Or ($Null -Eq $Script:Step3Badge) -Or ($Null -Eq $Script:Step3Mark) -Or ($Null -Eq $Script:ChangeNetworkButton) -Or ($Null -Eq $Script:ChangeNetworkLabel) -Or ($Null -Eq $Script:HelpTitle) -Or ($Null -Eq $Script:HelpBody) -Or ($Null -Eq $Script:MinimizeButton) -Or ($Null -Eq $Script:GuideButton) -Or ($Null -Eq $Script:CloseButton) -Or ($Null -Eq $Script:WindowSurface) -Or ($Null -Eq $Script:TitleBar)) {
     Write-SignInLog "[ERROR] The sign-in window could not be loaded."
     Write-Error "[ERROR] The sign-in window could not be loaded."
     Exit 1
@@ -2491,6 +2581,7 @@ $Script:StartClientButton.Add_Click({ Start-SecureClient })
 $Script:MinimizeButton.Add_Click({
     $Script:Window.WindowState = [System.Windows.WindowState]::Minimized
 })
+$Script:GuideButton.Add_Click({ Show-QuickGuide })
 $Script:CloseButton.Add_Click({
     $Script:Window.Close()
 })
